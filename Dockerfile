@@ -17,9 +17,12 @@ RUN apt-get update && \
 # Instala bibliotecas Python
 RUN pip3 install --no-cache-dir --break-system-packages scapy pythonping netifaces pyroute2
 
-# Copia o script e configuração para dentro do contêiner
-COPY router.py .
-COPY config.json .
+# Define o diretório de trabalho dentro do contêiner
+WORKDIR /opt/ospf-gaming
+
+# Copia o daemon e módulos auxiliares para o contêiner
+COPY ospf_gaming_daemon.py algorithm.py metrics.py route_manager.py ./
+COPY config/ ./config/
 
 # Define comando a ser executado na inicialização
-CMD ["python3", "router.py"]
+CMD ["python3", "ospf_gaming_daemon.py", "--config", "/opt/ospf-gaming/config/config.json"]

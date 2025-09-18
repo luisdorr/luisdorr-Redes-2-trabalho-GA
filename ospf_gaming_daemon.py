@@ -18,7 +18,7 @@ from algorithm import calculate_shortest_paths
 from metrics import get_static_bandwidth, measure_link_quality
 from route_manager import add_route, delete_route
 
-DEFAULT_CONFIG_PATH = Path("config.json")
+DEFAULT_CONFIG_PATH = Path("config/config.json")
 DEFAULT_PORT = 55000
 HELLO_INTERVAL = 5
 METRIC_INTERVAL = 30

@@ -11,7 +11,7 @@ OSPF-Gaming is a proof-of-concept, QoS-aware link-state routing protocol tuned f
 | `metrics.py` | Helper functions to collect QoS metrics via `ping` and a static bandwidth catalogue. |
 | `algorithm.py` | Dijkstra-based shortest path implementation used to build routing tables. |
 | `route_manager.py` | Wrapper around `ip route` to add and remove kernel forwarding entries. |
-| `config.json` | Example daemon configuration for router `r1`. Duplicate and edit this file per router. |
+| `config/config.json` | Example daemon configuration for router `r1`. Duplicate and edit this file per router. |
 | `readme.md` | Original coursework documentation left untouched for reference. |
 
 ## Launching the virtual topology
@@ -30,11 +30,11 @@ The FRRouting images already run the FRR stack and keep the container alive. The
 
 ## Running the OSPF-Gaming daemon
 
-1. Copy `config.json` and adapt it for each router. For instance, create `/opt/ospf-gaming/configs/r3.json` describing `r3`'s neighbours (IPs and UDP ports). Make sure neighbour definitions use the point-to-point addresses defined in `docker-compose.yml`.
+1. Copy `config/config.json` and adapt it for each router. For instance, create `/opt/ospf-gaming/config/r3.json` describing `r3`'s neighbours (IPs and UDP ports). Make sure neighbour definitions use the point-to-point addresses defined in `docker-compose.yml`.
 2. Enter the router container and launch the daemon:
    ```bash
    docker exec -it r1 bash
-   python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/configs/r1.json --log-level DEBUG
+   python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r1.json --log-level DEBUG
    ```
 3. Repeat the process on every router, each with its tailored configuration file. The daemon will:
    - send Hello packets on a dedicated UDP port to discover peers,
@@ -44,6 +44,23 @@ The FRRouting images already run the FRR stack and keep the container alive. The
 ### Route management
 
 The daemon optionally manages kernel routes when `route_mappings` are specified in the configuration. Each entry maps a remote router ID to a destination prefix (and optionally an egress interface). When present, the daemon installs or withdraws Linux routes via `ip route add`/`ip route del`. Omitting `route_mappings` leaves kernel routing untouched, which is useful during lab bring-up.
+
+## Building a standalone container
+
+The repository also ships a `Dockerfile` that bundles the daemon, helper modules, and the default configuration under `/opt/ospf-gaming`. Build and run it to launch a single router without Docker Compose:
+
+```bash
+docker build -t ospf-gaming .
+docker run --rm --network host ospf-gaming
+```
+
+The container entrypoint executes `python3 ospf_gaming_daemon.py --config /opt/ospf-gaming/config/config.json`. Mount a directory with customised configurations if you need to override the default example:
+
+```bash
+docker run --rm --network host \
+  -v "$(pwd)/config:/opt/ospf-gaming/config" \
+  ospf-gaming
+```
 
 ## Metric collection details
 
