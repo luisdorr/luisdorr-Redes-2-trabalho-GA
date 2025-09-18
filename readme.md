@@ -1,26 +1,54 @@
-# OSPF Gaming - Algoritmo de Roteamento para Jogos Eletrônicos
+# OSPF-Gaming
 
-## Visão Geral
+OSPF-Gaming is a proof-of-concept, QoS-aware link-state routing protocol tuned for interactive traffic such as online gaming. The daemon extends traditional OSPF concepts with active latency, jitter, packet loss, and static bandwidth measurements so that the best next-hop is calculated with end-to-end quality in mind.
 
-Este projeto implementa uma versão melhorada do protocolo OSPF (Open Shortest Path First), otimizada para redes com tráfego de jogos eletrônicos. A principal inovação é a substituição da métrica de custo padrão do OSPF (baseada apenas na largura de banda) por uma fórmula de custo composta que considera:
+## Repository structure
 
-- **Largura de Banda (α)**
-- **Latência (β)**
-- **Perda de Pacotes (γ)**
-- **Jitter (δ)**
+| File | Description |
+| ---- | ----------- |
+| `docker-compose.yml` | Docker Compose topology with eight FRRouting routers (r1-r8) and two end hosts (h1, h2) interconnected in a redundant mesh. |
+| `ospf_gaming_daemon.py` | Multithreaded Python daemon that speaks the OSPF-Gaming protocol, maintains link-state information, and synchronises kernel routes. |
+| `metrics.py` | Helper functions to collect QoS metrics via `ping` and a static bandwidth catalogue. |
+| `algorithm.py` | Dijkstra-based shortest path implementation used to build routing tables. |
+| `route_manager.py` | Wrapper around `ip route` to add and remove kernel forwarding entries. |
+| `config.json` | Example daemon configuration for router `r1`. Duplicate and edit this file per router. |
+| `readme.md` | Original coursework documentation left untouched for reference. |
 
-Essas métricas são cruciais para a qualidade da experiência em jogos online, onde a estabilidade e a rapidez da conexão são mais importantes do que a largura de banda bruta.
+## Launching the virtual topology
 
-## Fórmula de Custo Composta
+1. Ensure Docker and Docker Compose are installed on the host system.
+2. From the repository root directory, start the lab:
+   ```bash
+   docker-compose up -d
+   ```
+3. Verify that the containers are running:
+   ```bash
+   docker-compose ps
+   ```
 
-O coração do projeto é a fórmula de custo ponderada:
+The FRRouting images already run the FRR stack and keep the container alive. The project directory is mounted into `/opt/ospf-gaming` inside each router container.
 
-`Custo(L) = α⋅(BW_norm) + β⋅(Lat_norm) + γ⋅(Loss_norm) + δ⋅(Jitter_norm)`
+## Running the OSPF-Gaming daemon
 
-Onde:
-- **α, β, γ, δ**: Pesos configuráveis que somam 1.0. Para jogos, os pesos de latência, perda de pacotes e jitter são priorizados.
-- **_norm**: Valores normalizados das métricas, permitindo a combinação de unidades diferentes em um custo adimensional.
+1. Copy `config.json` and adapt it for each router. For instance, create `/opt/ospf-gaming/configs/r3.json` describing `r3`'s neighbours (IPs and UDP ports). Make sure neighbour definitions use the point-to-point addresses defined in `docker-compose.yml`.
+2. Enter the router container and launch the daemon:
+   ```bash
+   docker exec -it r1 bash
+   python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/configs/r1.json --log-level DEBUG
+   ```
+3. Repeat the process on every router, each with its tailored configuration file. The daemon will:
+   - send Hello packets on a dedicated UDP port to discover peers,
+   - listen for Hello and LSA messages on another thread,
+   - periodically measure latency, jitter, and packet loss via `ping`, combine the results with static bandwidth values, and run Dijkstra's algorithm to update routes.
 
-## Topologia da Rede
+### Route management
 
-A topologia da rede é definida em `topologia.mermaid` e implementada em `docker-compose.yml`. Ela consiste em 8 roteadores e 2 hosts, simulando uma rede complexa onde o roteamento otimizado é essencial.
+The daemon optionally manages kernel routes when `route_mappings` are specified in the configuration. Each entry maps a remote router ID to a destination prefix (and optionally an egress interface). When present, the daemon installs or withdraws Linux routes via `ip route add`/`ip route del`. Omitting `route_mappings` leaves kernel routing untouched, which is useful during lab bring-up.
+
+## Metric collection details
+
+`metrics.py` issues `ping -c 10 -i 0.2` towards each neighbour. The resulting average RTT, jitter (mdev), and packet loss percentage are parsed from the command's summary output. Static bandwidth values are stored in `STATIC_BANDWIDTH` to avoid resource-intensive throughput tests; adjust them to match the expected link capacities in your topology.
+
+## Next steps
+
+This repository establishes the groundwork for further protocol development. Future enhancements may include LSA ageing, reliable flooding, topology persistence, priority queues for gaming flows, and integration with FRRouting's zebra for interface discovery.
