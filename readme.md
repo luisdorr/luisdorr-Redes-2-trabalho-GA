@@ -11,7 +11,7 @@ OSPF-Gaming is a proof-of-concept, QoS-aware link-state routing protocol tuned f
 | `metrics.py` | Helper functions to collect QoS metrics via `ping` and a static bandwidth catalogue. |
 | `algorithm.py` | Dijkstra-based shortest path implementation used to build routing tables. |
 | `route_manager.py` | Wrapper around `ip route` to add and remove kernel forwarding entries. |
-| `config/config.json` | Example daemon configuration for router `r1`. Duplicate and edit this file per router. |
+| `config/` | JSON configuration files for every router (`config.json` is the template for `r1`). |
 | `readme.md` | Original coursework documentation left untouched for reference. |
 
 ## Launching the virtual topology
@@ -25,21 +25,29 @@ OSPF-Gaming is a proof-of-concept, QoS-aware link-state routing protocol tuned f
    ```bash
    docker-compose ps
    ```
-
-The FRRouting images already run the FRR stack and keep the container alive. The project directory is mounted into `/opt/ospf-gaming` inside each router container.
-
-## Running the OSPF-Gaming daemon
-
-1. Copy `config/config.json` and adapt it for each router. For instance, create `/opt/ospf-gaming/config/r3.json` describing `r3`'s neighbours (IPs and UDP ports). Make sure neighbour definitions use the point-to-point addresses defined in `docker-compose.yml`.
-2. Enter the router container and launch the daemon:
+4. Tail the daemon logs for a given router (replace `r1` with any router ID) to ensure the process is healthy:
    ```bash
-   docker exec -it r1 bash
-   python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r1.json --log-level DEBUG
+   docker logs -f r1
    ```
-3. Repeat the process on every router, each with its tailored configuration file. The daemon will:
-   - send Hello packets on a dedicated UDP port to discover peers,
-   - listen for Hello and LSA messages on another thread,
-   - periodically measure latency, jitter, and packet loss via `ping`, combine the results with static bandwidth values, and run Dijkstra's algorithm to update routes.
+
+Every router container enables IP forwarding, boots FRRouting, and launches `ospf_gaming_daemon.py` with the configuration in `config/<router>.json`. The project directory is mounted into `/opt/ospf-gaming` inside each router container so any edits made locally are reflected immediately.
+
+## Configuring the OSPF-Gaming daemon
+
+The repository ships ready-to-use configurations for all routers under `config/r1.json` through `config/r8.json`. IP addresses deliberately avoid the `.1` host address on each /29 link so that the daemon always peers with the `.2`/`.3` endpoints defined in `docker-compose.yml`.
+
+To adjust the lab for a different topology:
+
+1. Update the relevant `config/<router>.json` files with the new neighbour IPs, UDP ports, and optional `route_mappings`.
+2. Restart the affected router container so Docker Compose reloads the modified configuration, for example:
+   ```bash
+   docker-compose restart r3
+   ```
+
+The daemon running inside each router will:
+- send Hello packets on a dedicated UDP port to discover peers,
+- listen for Hello and LSA messages on another thread,
+- periodically measure latency, jitter, and packet loss via `ping`, combine the results with static bandwidth values, and run Dijkstra's algorithm to update routes.
 
 ### Route management
 

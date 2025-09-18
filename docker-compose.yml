@@ -5,107 +5,124 @@ x-router-common: &router-common
   privileged: true
   cap_add:
     - NET_ADMIN
+  working_dir: /opt/ospf-gaming
   volumes:
     - ./:/opt/ospf-gaming
   command: >-
-    /bin/sh -c "sysctl -w net.ipv4.ip_forward=1 && /usr/lib/frr/frrinit.sh start && tail -f /dev/null"
+    /bin/sh -c "sysctl -w net.ipv4.ip_forward=1 && /usr/lib/frr/frrinit.sh start && python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/$$ROUTER_ID.json"
 
 services:
   r1:
     <<: *router-common
     hostname: r1
     container_name: r1
+    environment:
+      ROUTER_ID: r1
     networks:
       net_r1_r2:
-        ipv4_address: 10.0.12.1
+        ipv4_address: 10.0.12.2
       net_r1_r3:
-        ipv4_address: 10.0.13.1
+        ipv4_address: 10.0.13.2
       net_r1_h1:
-        ipv4_address: 10.0.101.1
+        ipv4_address: 10.0.101.2
 
   r2:
     <<: *router-common
     hostname: r2
     container_name: r2
+    environment:
+      ROUTER_ID: r2
     networks:
       net_r1_r2:
-        ipv4_address: 10.0.12.2
+        ipv4_address: 10.0.12.3
       net_r2_r3:
-        ipv4_address: 10.0.23.1
+        ipv4_address: 10.0.23.2
       net_r2_r4:
-        ipv4_address: 10.0.24.1
+        ipv4_address: 10.0.24.2
 
   r3:
     <<: *router-common
     hostname: r3
     container_name: r3
+    environment:
+      ROUTER_ID: r3
     networks:
       net_r1_r3:
-        ipv4_address: 10.0.13.2
+        ipv4_address: 10.0.13.3
       net_r2_r3:
-        ipv4_address: 10.0.23.2
+        ipv4_address: 10.0.23.3
       net_r3_r5:
-        ipv4_address: 10.0.35.1
+        ipv4_address: 10.0.35.2
 
   r4:
     <<: *router-common
     hostname: r4
     container_name: r4
+    environment:
+      ROUTER_ID: r4
     networks:
       net_r2_r4:
-        ipv4_address: 10.0.24.2
+        ipv4_address: 10.0.24.3
       net_r4_r5:
-        ipv4_address: 10.0.45.1
+        ipv4_address: 10.0.45.2
       net_r4_r6:
-        ipv4_address: 10.0.46.1
+        ipv4_address: 10.0.46.2
 
   r5:
     <<: *router-common
     hostname: r5
     container_name: r5
+    environment:
+      ROUTER_ID: r5
     networks:
       net_r3_r5:
-        ipv4_address: 10.0.35.2
+        ipv4_address: 10.0.35.3
       net_r4_r5:
-        ipv4_address: 10.0.45.2
+        ipv4_address: 10.0.45.3
       net_r5_r7:
-        ipv4_address: 10.0.57.1
+        ipv4_address: 10.0.57.2
 
   r6:
     <<: *router-common
     hostname: r6
     container_name: r6
+    environment:
+      ROUTER_ID: r6
     networks:
       net_r4_r6:
-        ipv4_address: 10.0.46.2
+        ipv4_address: 10.0.46.3
       net_r6_r7:
-        ipv4_address: 10.0.67.1
+        ipv4_address: 10.0.67.2
       net_r6_r8:
-        ipv4_address: 10.0.68.1
+        ipv4_address: 10.0.68.2
 
   r7:
     <<: *router-common
     hostname: r7
     container_name: r7
+    environment:
+      ROUTER_ID: r7
     networks:
       net_r5_r7:
-        ipv4_address: 10.0.57.2
+        ipv4_address: 10.0.57.3
       net_r6_r7:
-        ipv4_address: 10.0.67.2
+        ipv4_address: 10.0.67.3
       net_r7_r8:
-        ipv4_address: 10.0.78.1
+        ipv4_address: 10.0.78.2
 
   r8:
     <<: *router-common
     hostname: r8
     container_name: r8
+    environment:
+      ROUTER_ID: r8
     networks:
       net_r6_r8:
-        ipv4_address: 10.0.68.2
+        ipv4_address: 10.0.68.3
       net_r7_r8:
-        ipv4_address: 10.0.78.2
+        ipv4_address: 10.0.78.3
       net_r8_h2:
-        ipv4_address: 10.0.108.1
+        ipv4_address: 10.0.108.2
 
   h1:
     image: alpine:3.19
@@ -114,7 +131,7 @@ services:
     command: sh -c "tail -f /dev/null"
     networks:
       net_r1_h1:
-        ipv4_address: 10.0.101.2
+        ipv4_address: 10.0.101.3
 
   h2:
     image: alpine:3.19
@@ -123,83 +140,83 @@ services:
     command: sh -c "tail -f /dev/null"
     networks:
       net_r8_h2:
-        ipv4_address: 10.0.108.2
+        ipv4_address: 10.0.108.3
 
 networks:
   net_r1_r2:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.12.0/30
+        - subnet: 10.0.12.0/29
 
   net_r1_r3:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.13.0/30
+        - subnet: 10.0.13.0/29
 
   net_r2_r3:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.23.0/30
+        - subnet: 10.0.23.0/29
 
   net_r2_r4:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.24.0/30
+        - subnet: 10.0.24.0/29
 
   net_r3_r5:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.35.0/30
+        - subnet: 10.0.35.0/29
 
   net_r4_r5:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.45.0/30
+        - subnet: 10.0.45.0/29
 
   net_r4_r6:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.46.0/30
+        - subnet: 10.0.46.0/29
 
   net_r5_r7:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.57.0/30
+        - subnet: 10.0.57.0/29
 
   net_r6_r7:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.67.0/30
+        - subnet: 10.0.67.0/29
 
   net_r6_r8:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.68.0/30
+        - subnet: 10.0.68.0/29
 
   net_r7_r8:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.78.0/30
+        - subnet: 10.0.78.0/29
 
   net_r1_h1:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.101.0/30
+        - subnet: 10.0.101.0/29
 
   net_r8_h2:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.0.108.0/30
+        - subnet: 10.0.108.0/29
