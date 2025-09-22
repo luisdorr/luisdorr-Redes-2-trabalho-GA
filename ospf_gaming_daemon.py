@@ -60,9 +60,11 @@ class OSPFGamingDaemon:
                 },
             }
 
+        # Topology and routing
         self.topology_graph: Dict[str, Dict[str, float]] = {self.router_id: {}}
         self.routing_table: Dict[str, str] = {}
         self.installed_routes: Dict[str, str] = {}
+        self.lsa_versions: Dict[str, int] = {}  # track seqnum per origin
 
         self._state_lock = threading.Lock()
         self._running = threading.Event()
@@ -74,13 +76,12 @@ class OSPFGamingDaemon:
         self._socket.settimeout(1.0)
 
         self._threads: list[threading.Thread] = []
+        self._seqnum = 0  # local LSA sequence number
 
     # ------------------------------------------------------------------
     # Lifecycle management
     # ------------------------------------------------------------------
     def start(self) -> None:
-        """Start the daemon threads and block until interrupted."""
-
         _LOGGER.info("Starting OSPF-Gaming daemon for router %s", self.router_id)
 
         self._threads = [
@@ -100,8 +101,6 @@ class OSPFGamingDaemon:
             self.stop()
 
     def stop(self) -> None:
-        """Stop the daemon and wait for worker threads to finish."""
-
         self._running.clear()
         self._socket.close()
         for thread in self._threads:
@@ -112,8 +111,6 @@ class OSPFGamingDaemon:
     # Core protocol loops
     # ------------------------------------------------------------------
     def _hello_loop(self) -> None:
-        """Periodically send hello packets to configured neighbours."""
-
         while self._running.is_set():
             for neighbor_id in list(self.neighbors.keys()):
                 message = {
@@ -125,8 +122,6 @@ class OSPFGamingDaemon:
             time.sleep(self.hello_interval)
 
     def _listen_loop(self) -> None:
-        """Listen for protocol packets and dispatch handlers."""
-
         while self._running.is_set():
             try:
                 payload, (source_ip, _) = self._socket.recvfrom(4096)
@@ -150,8 +145,6 @@ class OSPFGamingDaemon:
                 _LOGGER.debug("Ignoring unsupported packet type: %s", packet_type)
 
     def _metric_loop(self) -> None:
-        """Measure QoS metrics and flood LSAs at regular intervals."""
-
         while self._running.is_set():
             self._update_link_metrics()
             self._broadcast_lsa()
@@ -163,11 +156,8 @@ class OSPFGamingDaemon:
     # ------------------------------------------------------------------
     def _process_hello(self, message: Dict[str, Any], source_ip: str) -> None:
         neighbor_id = message.get("router_id")
-
-        # 🔹 Descartar hellos originados pelo próprio roteador
         if neighbor_id == self.router_id:
             return
-
         if neighbor_id not in self.neighbors:
             return
 
@@ -178,20 +168,36 @@ class OSPFGamingDaemon:
     def _process_lsa(self, message: Dict[str, Any]) -> None:
         origin = message.get("router_id")
         links = message.get("neighbors", {})
+        seqnum = int(message.get("seqnum", 0))
         if not origin:
             return
 
         with self._state_lock:
+            current_seq = self.lsa_versions.get(origin, -1)
+            if seqnum <= current_seq:
+                _LOGGER.debug(
+                    "Discarding old LSA from %s (seqnum=%s, current=%s)",
+                    origin,
+                    seqnum,
+                    current_seq,
+                )
+                return
+
+            self.lsa_versions[origin] = seqnum
             if origin not in self.topology_graph:
                 self.topology_graph[origin] = {}
             self.topology_graph[origin].update({k: float(v) for k, v in links.items()})
+            _LOGGER.debug("Updated topology with LSA from %s seq=%s", origin, seqnum)
+
+        # re-flood to neighbors except the origin
+        for neighbor_id in list(self.neighbors.keys()):
+            if neighbor_id != origin:
+                self._send_message(neighbor_id, message)
 
     # ------------------------------------------------------------------
     # Metrics and topology management
     # ------------------------------------------------------------------
     def _update_link_metrics(self) -> None:
-        """Refresh local link metrics by probing known neighbours."""
-
         for neighbor_id, neighbor in self.neighbors.items():
             ip_address = neighbor.get("ip")
             if not ip_address:
@@ -233,8 +239,6 @@ class OSPFGamingDaemon:
         loss: float,
         bandwidth: Optional[int],
     ) -> float:
-        """Derive the composite routing cost from QoS metrics."""
-
         if not math.isfinite(latency) or not math.isfinite(jitter) or loss >= 100.0:
             return float("inf")
 
@@ -248,30 +252,26 @@ class OSPFGamingDaemon:
         return normalized_latency + penalty + bandwidth_penalty
 
     def _broadcast_lsa(self) -> None:
-        """Flood a link state advertisement to every neighbour."""
-
         with self._state_lock:
             local_view = deepcopy(self.topology_graph.get(self.router_id, {}))
-
-        message = {
-            "type": "lsa",
-            "router_id": self.router_id,
-            "neighbors": local_view,
-            "timestamp": time.time(),
-        }
+            self._seqnum += 1
+            message = {
+                "type": "lsa",
+                "router_id": self.router_id,
+                "neighbors": local_view,
+                "seqnum": self._seqnum,
+                "timestamp": time.time(),
+            }
 
         for neighbor_id in list(self.neighbors.keys()):
             self._send_message(neighbor_id, message)
 
     def _recalculate_routes(self) -> None:
-        """Compute a new routing table and synchronise kernel routes."""
-
         with self._state_lock:
             topology_snapshot = deepcopy(self.topology_graph)
 
         new_routing_table = calculate_shortest_paths(topology_snapshot, self.router_id)
         _LOGGER.debug("Routing table recomputed: %s", new_routing_table)
-
         self._synchronise_kernel_routes(new_routing_table)
 
         with self._state_lock:
@@ -303,7 +303,6 @@ class OSPFGamingDaemon:
             except (subprocess.CalledProcessError, OSError):
                 _LOGGER.exception("Failed to install route to %s via %s", prefix, next_hop_ip)
 
-        # Remove routes that are no longer in the table
         active_prefixes = {prefix for _, prefix, _ in self._iter_route_targets()}
         for prefix in list(self.installed_routes.keys()):
             if prefix not in active_prefixes:
