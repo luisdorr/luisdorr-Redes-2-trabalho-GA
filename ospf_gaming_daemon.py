@@ -163,14 +163,17 @@ class OSPFGamingDaemon:
     # ------------------------------------------------------------------
     def _process_hello(self, message: Dict[str, Any], source_ip: str) -> None:
         neighbor_id = message.get("router_id")
+
+        # 🔹 Descartar hellos originados pelo próprio roteador
+        if neighbor_id == self.router_id:
+            return
+
         if neighbor_id not in self.neighbors:
-            _LOGGER.debug("Received hello from unknown neighbour %s", neighbor_id)
             return
 
         with self._state_lock:
             self.neighbors[neighbor_id]["last_hello"] = time.time()
             self.neighbors[neighbor_id].setdefault("ip", source_ip)
-        _LOGGER.debug("Hello received from %s", neighbor_id)
 
     def _process_lsa(self, message: Dict[str, Any]) -> None:
         origin = message.get("router_id")
@@ -183,8 +186,6 @@ class OSPFGamingDaemon:
                 self.topology_graph[origin] = {}
             self.topology_graph[origin].update({k: float(v) for k, v in links.items()})
 
-        _LOGGER.debug("LSA processed from %s", origin)
-
     # ------------------------------------------------------------------
     # Metrics and topology management
     # ------------------------------------------------------------------
@@ -194,7 +195,6 @@ class OSPFGamingDaemon:
         for neighbor_id, neighbor in self.neighbors.items():
             ip_address = neighbor.get("ip")
             if not ip_address:
-                _LOGGER.warning("Skipping metric update for %s due to missing IP", neighbor_id)
                 continue
 
             latency, jitter, loss = measure_link_quality(ip_address)
@@ -289,7 +289,6 @@ class OSPFGamingDaemon:
 
             next_hop_ip = self._resolve_next_hop_ip(next_hop_id)
             if not next_hop_ip:
-                _LOGGER.warning("Unknown next hop %s for destination %s", next_hop_id, destination)
                 continue
 
             current_next_hop = self.installed_routes.get(prefix)
@@ -349,8 +348,8 @@ class OSPFGamingDaemon:
         payload = json.dumps(message).encode("utf-8")
         try:
             self._socket.sendto(payload, (neighbor["ip"], neighbor["port"]))
-        except OSError as exc:
-            _LOGGER.warning("Failed to send packet to %s: %s", neighbor_id, exc)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Configuration helpers
