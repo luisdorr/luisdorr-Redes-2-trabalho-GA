@@ -8,6 +8,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r1.json
+      --log-level DEBUG
     networks:
       net_r1_r2:
         ipv4_address: 10.0.12.3
@@ -22,6 +23,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r2.json
+      --log-level DEBUG
     networks:
       net_r1_r2:
         ipv4_address: 10.0.12.2
@@ -38,6 +40,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r3.json
+      --log-level DEBUG
     networks:
       net_r1_r3:
         ipv4_address: 10.0.13.2
@@ -54,6 +57,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r4.json
+      --log-level DEBUG
     networks:
       net_r2_r4:
         ipv4_address: 10.0.24.2
@@ -70,6 +74,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r5.json
+      --log-level DEBUG
     networks:
       net_r3_r5:
         ipv4_address: 10.0.35.2
@@ -86,6 +91,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r6.json
+      --log-level DEBUG
     networks:
       net_r4_r6:
         ipv4_address: 10.0.46.2
@@ -102,6 +108,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r7.json
+      --log-level DEBUG
     networks:
       net_r5_r7:
         ipv4_address: 10.0.57.2
@@ -118,6 +125,7 @@ services:
     volumes:
     - ./:/opt/ospf-gaming
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r8.json
+      --log-level DEBUG
     networks:
       net_r6_r8:
         ipv4_address: 10.0.68.2

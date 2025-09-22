@@ -10,8 +10,11 @@ compose = {
     "networks": {}
 }
 
+
 def network_name(r1, r2):
-    return f"net_{min(r1,r2)}_{max(r1,r2)}"
+    """Nome de rede único para um par de roteadores (ordem consistente)."""
+    return f"net_{min(r1, r2)}_{max(r1, r2)}"
+
 
 for file in os.listdir(CONFIG_DIR):
     if not file.endswith(".json"):
@@ -30,16 +33,18 @@ for file in os.listdir(CONFIG_DIR):
         "volumes": [
             "./:/opt/ospf-gaming"
         ],
-        "command": f"python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/{file}",
+        # 👇 força todos os daemons a usarem DEBUG
+        "command": f"python3 /opt/ospf-gaming/ospf_gaming_daemon.py "
+                   f"--config /opt/ospf-gaming/config/{file} --log-level DEBUG",
         "networks": {}
     }
 
-    # Para cada vizinho, cria a rede ponto-a-ponto
+    # Para cada vizinho, cria uma rede ponto-a-ponto
     for neighbor in cfg.get("neighbors", []):
         net = network_name(router_id, neighbor["id"])
         ip = neighbor["ip"]
 
-        # Descobre a subnet automaticamente (assume /30 ou /29 com base no .x)
+        # Assume /24 (pode ajustar para /30 se quiser mais enxuto)
         octets = ip.split(".")
         base = ".".join(octets[:3] + ["0"])
         subnet = f"{base}/24"
