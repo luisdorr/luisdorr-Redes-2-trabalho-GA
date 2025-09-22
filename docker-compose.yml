@@ -2,6 +2,7 @@ services:
   r1:
     image: frrouting/frr:latest
     container_name: r1
+    hostname: r1
     privileged: true
     cap_add:
     - NET_ADMIN
@@ -17,6 +18,7 @@ services:
   r2:
     image: frrouting/frr:latest
     container_name: r2
+    hostname: r2
     privileged: true
     cap_add:
     - NET_ADMIN
@@ -34,6 +36,7 @@ services:
   r3:
     image: frrouting/frr:latest
     container_name: r3
+    hostname: r3
     privileged: true
     cap_add:
     - NET_ADMIN
@@ -51,6 +54,7 @@ services:
   r4:
     image: frrouting/frr:latest
     container_name: r4
+    hostname: r4
     privileged: true
     cap_add:
     - NET_ADMIN
@@ -68,6 +72,7 @@ services:
   r5:
     image: frrouting/frr:latest
     container_name: r5
+    hostname: r5
     privileged: true
     cap_add:
     - NET_ADMIN
@@ -82,6 +87,34 @@ services:
         ipv4_address: 10.0.45.3
       net_r5_r7:
         ipv4_address: 10.0.57.2
+  r6:
+    image: frrouting/frr:latest
+    container_name: r6
+    hostname: r6
+    privileged: true
+    cap_add:
+    - NET_ADMIN
+    volumes:
+    - ./:/opt/ospf-gaming
+    command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r6.json
+      --log-level DEBUG
+    networks:
+      net_r4_r6:
+        ipv4_address: 10.0.46.3
+  r7:
+    image: frrouting/frr:latest
+    container_name: r7
+    hostname: r7
+    privileged: true
+    cap_add:
+    - NET_ADMIN
+    volumes:
+    - ./:/opt/ospf-gaming
+    command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r7.json
+      --log-level DEBUG
+    networks:
+      net_r5_r7:
+        ipv4_address: 10.0.57.3
 networks:
   net_r1_r2:
     driver: bridge

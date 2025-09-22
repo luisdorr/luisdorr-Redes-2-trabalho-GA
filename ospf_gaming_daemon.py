@@ -37,6 +37,27 @@ class OSPFGamingDaemon:
         self.listen_port: int = self.config.get("listen_port", DEFAULT_PORT)
         self.hello_interval: int = self.config.get("hello_interval", HELLO_INTERVAL)
         self.metric_interval: int = self.config.get("metric_interval", METRIC_INTERVAL)
+        
+        # Configurable ping parameters
+        self.ping_count: int = self.config.get("ping_count", 10)
+        self.ping_interval: float = self.config.get("ping_interval", 0.2)
+        
+       # Configurable cost weights (prioritizing jitter)
+        weights_percent = self.config.get("weights_percent", {})
+        self.weight_latency: float = weights_percent.get("latency", 25.0)
+        self.weight_jitter: float = weights_percent.get("jitter", 35.0)
+        self.weight_loss: float = weights_percent.get("loss", 30.0)
+        self.weight_bandwidth: float = weights_percent.get("bandwidth", 10.0)
+        
+        # Normalization thresholds
+        normalization = self.config.get("normalization", {})
+        self.latency_max_ms: float = normalization.get("latency_max_ms", 100.0)
+        self.jitter_max_ms: float = normalization.get("jitter_max_ms", 20.0)
+        self.bandwidth_ref_mbps: float = normalization.get("bandwidth_ref_mbps", 1000.0)
+        
+        # Backward compatibility warning for deprecated cost_weights
+        if "cost_weights" in self.config:
+            _LOGGER.warning("cost_weights is deprecated, use weights_percent and normalization instead")
 
         neighbor_entries = self.config.get("neighbors", [])
         self.neighbor_settings: Dict[str, Dict[str, Any]] = {
@@ -247,7 +268,9 @@ class OSPFGamingDaemon:
             if not ip_address:
                 continue
 
-            latency, jitter, loss = measure_link_quality(ip_address)
+            latency, jitter, loss = measure_link_quality(
+                ip_address, self.ping_count, self.ping_interval
+            )
             bandwidth = neighbor["metrics"].get("bandwidth")
             if bandwidth is None:
                 bandwidth = get_static_bandwidth(self.router_id, neighbor_id)
@@ -269,7 +292,7 @@ class OSPFGamingDaemon:
                 self.topology_graph.setdefault(neighbor_id, {})[self.router_id] = cost
 
             _LOGGER.debug(
-                "Metrics for %s -> latency: %.2f ms, jitter: %.2f ms, loss: %.2f%%, cost: %.2f",
+                "Metrics for %s -> latency: %.2f ms, jitter: %.3f ms, loss: %.2f%%, cost: %.2f",
                 neighbor_id,
                 latency,
                 jitter,
@@ -282,13 +305,35 @@ class OSPFGamingDaemon:
     ) -> float:
         if not math.isfinite(latency) or not math.isfinite(jitter) or loss >= 100.0:
             return float("inf")
-        penalty = loss * 10.0 + jitter
-        normalized_latency = latency
+        
+        # Normalize metrics to 0..1 range
+        lat_norm = min(1.0, max(0.0, latency / self.latency_max_ms))
+        jit_norm = min(1.0, max(0.0, jitter / self.jitter_max_ms))
+        loss_norm = min(1.0, max(0.0, loss / 100.0))
+        
         if bandwidth and bandwidth > 0:
-            bandwidth_penalty = 1000.0 / bandwidth
+            bw_norm = 1.0 - min(1.0, max(0.0, bandwidth / self.bandwidth_ref_mbps))
         else:
-            bandwidth_penalty = 1000.0
-        return normalized_latency + penalty + bandwidth_penalty
+            bw_norm = 1.0  # No bandwidth = worst case
+            
+        # Calculate weighted components (percentages sum to 100)
+        latency_component = lat_norm * self.weight_latency
+        jitter_component = jit_norm * self.weight_jitter
+        loss_component = loss_norm * self.weight_loss
+        bandwidth_component = bw_norm * self.weight_bandwidth
+        
+        cost = latency_component + jitter_component + loss_component + bandwidth_component
+        
+        _LOGGER.debug(
+            "Cost calculation: lat=(%.2f/%.1f)=%.2f*%.0f=%.2f, jit=(%.2f/%.1f)=%.2f*%.0f=%.2f, loss=(%.2f/100)=%.2f*%.0f=%.2f, bw=(1-%.2f)=%.2f*%.0f=%.2f, total=%.2f",
+            latency, self.latency_max_ms, lat_norm, self.weight_latency, latency_component,
+            jitter, self.jitter_max_ms, jit_norm, self.weight_jitter, jitter_component,
+            loss, loss_norm, self.weight_loss, loss_component,
+            bandwidth/self.bandwidth_ref_mbps if bandwidth else 0, bw_norm, self.weight_bandwidth, bandwidth_component,
+            cost
+        )
+        
+        return cost
 
     def _broadcast_lsa(self) -> None:
         with self._state_lock:
