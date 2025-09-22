@@ -12,7 +12,7 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional, List, Set
 
 from algorithm import calculate_shortest_paths
 from metrics import get_static_bandwidth, measure_link_quality
@@ -22,6 +22,7 @@ DEFAULT_CONFIG_PATH = Path("config/config.json")
 DEFAULT_PORT = 55000
 HELLO_INTERVAL = 5
 METRIC_INTERVAL = 30
+DEAD_INTERVAL = 20  # ~4x hello, como no OSPF real
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +43,13 @@ class OSPFGamingDaemon:
             entry["id"]: entry for entry in neighbor_entries
         }
 
+        # Estado por vizinho (direto)
         self.neighbors: Dict[str, Dict[str, Any]] = {}
+        # Subnets locais (diretamente conectadas) deste roteador
+        self.local_prefixes: List[str] = []
+        # LSDB simplificada de subnets por roteador {router_id: set(prefixes)}
+        self.lsdb_prefixes: Dict[str, Set[str]] = {}
+
         for neighbor_id, settings in self.neighbor_settings.items():
             bandwidth = settings.get("bandwidth") or get_static_bandwidth(
                 self.router_id, neighbor_id
@@ -59,12 +66,23 @@ class OSPFGamingDaemon:
                     "bandwidth": bandwidth,
                 },
             }
+            # Deriva prefixo da subnet /24 a partir do IP do link
+            ip = settings["ip"]
+            base = ".".join(ip.split(".")[:3]) + ".0/24"
+            if base not in self.local_prefixes:
+                self.local_prefixes.append(base)
 
-        # Topology and routing
+        # Cada roteador deve "anunciar" suas subnets locais. Coloca as minhas na LSDB
+        self.lsdb_prefixes[self.router_id] = set(self.local_prefixes)
+
+        # Grafo de custos entre roteadores (router_id -> {neighbor_id: cost})
         self.topology_graph: Dict[str, Dict[str, float]] = {self.router_id: {}}
+        # Tabela de roteamento lógico: destino(router_id) -> next_hop(router_id)
         self.routing_table: Dict[str, str] = {}
+        # Rotas instaladas no kernel: prefix -> next_hop_ip
         self.installed_routes: Dict[str, str] = {}
-        self.lsa_versions: Dict[str, int] = {}  # track seqnum per origin
+        # Controle de versão de LSA por originador
+        self.lsa_versions: Dict[str, int] = {}
 
         self._state_lock = threading.Lock()
         self._running = threading.Event()
@@ -76,7 +94,7 @@ class OSPFGamingDaemon:
         self._socket.settimeout(1.0)
 
         self._threads: list[threading.Thread] = []
-        self._seqnum = 0  # local LSA sequence number
+        self._seqnum = 0  # meu seqnum de LSA
 
     # ------------------------------------------------------------------
     # Lifecycle management
@@ -88,6 +106,7 @@ class OSPFGamingDaemon:
             threading.Thread(target=self._hello_loop, name="hello", daemon=True),
             threading.Thread(target=self._listen_loop, name="listener", daemon=True),
             threading.Thread(target=self._metric_loop, name="metrics", daemon=True),
+            threading.Thread(target=self._dead_interval_loop, name="dead", daemon=True),
         ]
 
         for thread in self._threads:
@@ -124,7 +143,7 @@ class OSPFGamingDaemon:
     def _listen_loop(self) -> None:
         while self._running.is_set():
             try:
-                payload, (source_ip, _) = self._socket.recvfrom(4096)
+                payload, (source_ip, _) = self._socket.recvfrom(65535)
             except socket.timeout:
                 continue
             except OSError:
@@ -151,6 +170,16 @@ class OSPFGamingDaemon:
             self._recalculate_routes()
             time.sleep(self.metric_interval)
 
+    def _dead_interval_loop(self) -> None:
+        """Marca vizinhos como down se não recebem Hello por DEAD_INTERVAL."""
+        while self._running.is_set():
+            now = time.time()
+            with self._state_lock:
+                for nid, state in self.neighbors.items():
+                    if now - state["last_hello"] > DEAD_INTERVAL:
+                        state["metrics"]["cost"] = float("inf")
+            time.sleep(5)
+
     # ------------------------------------------------------------------
     # Packet handlers
     # ------------------------------------------------------------------
@@ -159,40 +188,55 @@ class OSPFGamingDaemon:
         if neighbor_id == self.router_id:
             return
         if neighbor_id not in self.neighbors:
+            # não aceitamos "novos" vizinhos dinâmicos neste protótipo
             return
 
         with self._state_lock:
             self.neighbors[neighbor_id]["last_hello"] = time.time()
+            # se JSON não tinha IP, grava o source_ip observado
             self.neighbors[neighbor_id].setdefault("ip", source_ip)
 
     def _process_lsa(self, message: Dict[str, Any]) -> None:
         origin = message.get("router_id")
         links = message.get("neighbors", {})
+        prefixes = message.get("prefixes", [])
         seqnum = int(message.get("seqnum", 0))
         if not origin:
             return
 
+        need_reflood = False
         with self._state_lock:
             current_seq = self.lsa_versions.get(origin, -1)
             if seqnum <= current_seq:
-                _LOGGER.debug(
-                    "Discarding old LSA from %s (seqnum=%s, current=%s)",
-                    origin,
-                    seqnum,
-                    current_seq,
-                )
+                # LSA velho
                 return
 
+            # Atualiza LSDB de versões
             self.lsa_versions[origin] = seqnum
+
+            # Atualiza grafo de custos
             if origin not in self.topology_graph:
                 self.topology_graph[origin] = {}
+            before_links = dict(self.topology_graph[origin])
             self.topology_graph[origin].update({k: float(v) for k, v in links.items()})
-            _LOGGER.debug("Updated topology with LSA from %s seq=%s", origin, seqnum)
+            if self.topology_graph[origin] != before_links:
+                need_reflood = True
 
-        # re-flood to neighbors except the origin
-        for neighbor_id in list(self.neighbors.keys()):
-            if neighbor_id != origin:
-                self._send_message(neighbor_id, message)
+            # Armazena prefixes anunciados por 'origin'
+            old_prefixes = self.lsdb_prefixes.get(origin, set())
+            new_prefixes = set()
+            for p in prefixes:
+                if isinstance(p, str):
+                    new_prefixes.add(p)
+            if new_prefixes and new_prefixes != old_prefixes:
+                self.lsdb_prefixes[origin] = new_prefixes
+                need_reflood = True
+
+        # Flood controlado: reenvia se houve novidade
+        if need_reflood:
+            for neighbor_id in list(self.neighbors.keys()):
+                if neighbor_id != origin:
+                    self._send_message(neighbor_id, message)
 
     # ------------------------------------------------------------------
     # Metrics and topology management
@@ -220,6 +264,7 @@ class OSPFGamingDaemon:
                         "cost": cost,
                     }
                 )
+                # bidirecional (simplificação)
                 self.topology_graph.setdefault(self.router_id, {})[neighbor_id] = cost
                 self.topology_graph.setdefault(neighbor_id, {})[self.router_id] = cost
 
@@ -233,27 +278,22 @@ class OSPFGamingDaemon:
             )
 
     def _calculate_cost(
-        self,
-        latency: float,
-        jitter: float,
-        loss: float,
-        bandwidth: Optional[int],
+        self, latency: float, jitter: float, loss: float, bandwidth: Optional[int]
     ) -> float:
         if not math.isfinite(latency) or not math.isfinite(jitter) or loss >= 100.0:
             return float("inf")
-
         penalty = loss * 10.0 + jitter
         normalized_latency = latency
         if bandwidth and bandwidth > 0:
             bandwidth_penalty = 1000.0 / bandwidth
         else:
             bandwidth_penalty = 1000.0
-
         return normalized_latency + penalty + bandwidth_penalty
 
     def _broadcast_lsa(self) -> None:
         with self._state_lock:
             local_view = deepcopy(self.topology_graph.get(self.router_id, {}))
+            prefixes = list(self.lsdb_prefixes.get(self.router_id, set())) or list(self.local_prefixes)
             self._seqnum += 1
             message = {
                 "type": "lsa",
@@ -261,19 +301,17 @@ class OSPFGamingDaemon:
                 "neighbors": local_view,
                 "seqnum": self._seqnum,
                 "timestamp": time.time(),
+                "prefixes": prefixes,  # 🔹 anuncio das minhas subnets
             }
-
         for neighbor_id in list(self.neighbors.keys()):
             self._send_message(neighbor_id, message)
 
     def _recalculate_routes(self) -> None:
         with self._state_lock:
             topology_snapshot = deepcopy(self.topology_graph)
-
         new_routing_table = calculate_shortest_paths(topology_snapshot, self.router_id)
         _LOGGER.debug("Routing table recomputed: %s", new_routing_table)
         self._synchronise_kernel_routes(new_routing_table)
-
         with self._state_lock:
             self.routing_table = new_routing_table
 
@@ -281,56 +319,83 @@ class OSPFGamingDaemon:
     # Routing table management
     # ------------------------------------------------------------------
     def _synchronise_kernel_routes(self, new_routes: Dict[str, str]) -> None:
-        for destination, prefix, interface in self._iter_route_targets():
-            next_hop_id = new_routes.get(destination)
-            if not next_hop_id:
-                self._remove_installed_route(prefix)
+        """
+        Instala rotas para todas as subnets remotas anunciadas na LSDB.
+        - Ignora prefixos locais (kernel já tem proto kernel scope link).
+        - Remove somente rotas que não são mais alcançáveis segundo a tabela nova.
+        """
+        desired_prefixes: Dict[str, str] = {}  # prefix -> next_hop_ip
+
+        # Para cada destino (router_id) com next-hop definido, instala as suas subnets anunciadas
+        for destination, next_hop_id in new_routes.items():
+            if destination == self.router_id:
                 continue
 
             next_hop_ip = self._resolve_next_hop_ip(next_hop_id)
             if not next_hop_ip:
                 continue
 
+            for prefix in self._resolve_router_prefixes(destination):
+                # não instala rota para subnets locais
+                if prefix in self.local_prefixes:
+                    continue
+                desired_prefixes[prefix] = next_hop_ip
+
+        # Adiciona/atualiza rotas necessárias
+        for prefix, next_hop_ip in desired_prefixes.items():
             current_next_hop = self.installed_routes.get(prefix)
             if current_next_hop == next_hop_ip:
                 continue
-
             try:
                 if current_next_hop:
                     delete_route(prefix)
-                add_route(prefix, next_hop_ip, interface)
+                add_route(prefix, next_hop_ip)  # se teu route_manager aceitar, pode passar a interface também
                 self.installed_routes[prefix] = next_hop_ip
-            except (subprocess.CalledProcessError, OSError):
-                _LOGGER.exception("Failed to install route to %s via %s", prefix, next_hop_ip)
+                _LOGGER.debug("Installed/updated route %s via %s", prefix, next_hop_ip)
+            except Exception:
+                _LOGGER.exception("Falha ao instalar rota para %s via %s", prefix, next_hop_ip)
 
-        active_prefixes = {prefix for _, prefix, _ in self._iter_route_targets()}
+        # Remove rotas que não são mais desejadas
+        desired_set = set(desired_prefixes.keys())
         for prefix in list(self.installed_routes.keys()):
-            if prefix not in active_prefixes:
+            if prefix not in desired_set:
+                # Evita remover prefixo local por engano (não deveria estar em installed_routes, mas por segurança)
+                if prefix in self.local_prefixes:
+                    self.installed_routes.pop(prefix, None)
+                    continue
                 self._remove_installed_route(prefix)
-
-    def _iter_route_targets(self) -> Iterable[tuple[str, str, Optional[str]]]:
-        route_mappings = self.config.get("route_mappings", {})
-        for destination, mapping in route_mappings.items():
-            if isinstance(mapping, str):
-                yield destination, mapping, None
-            elif isinstance(mapping, dict):
-                yield destination, mapping["prefix"], mapping.get("interface")
 
     def _remove_installed_route(self, prefix: str) -> None:
         if prefix not in self.installed_routes:
             return
         try:
             delete_route(prefix)
-        except (subprocess.CalledProcessError, OSError):
-            _LOGGER.exception("Failed to remove stale route for %s", prefix)
+        except Exception:
+            _LOGGER.exception("Falha ao remover rota para %s", prefix)
         else:
             self.installed_routes.pop(prefix, None)
+            _LOGGER.debug("Removed route %s", prefix)
 
     def _resolve_next_hop_ip(self, next_hop_id: str) -> Optional[str]:
         neighbor = self.neighbors.get(next_hop_id)
         if neighbor:
             return neighbor.get("ip")
         return None
+
+    def _resolve_router_prefixes(self, router_id: str) -> List[str]:
+        """Retorna subnets diretamente conectadas conhecidas para 'router_id' da LSDB."""
+        if router_id == self.router_id:
+            return list(self.local_prefixes)
+        # Primeiro tenta LSDB (vinha pelos LSAs processados)
+        prefixes = self.lsdb_prefixes.get(router_id)
+        if prefixes:
+            return list(prefixes)
+        # Fallback: se é vizinho direto e não vimos LSA de prefixes ainda, infere a /24 do link
+        if router_id in self.neighbor_settings:
+            ip = self.neighbor_settings[router_id]["ip"]
+            base = ".".join(ip.split(".")[:3]) + ".0/24"
+            return [base]
+        return []
 
     def _flush_routes(self) -> None:
         for prefix in list(self.installed_routes.keys()):
@@ -343,7 +408,6 @@ class OSPFGamingDaemon:
         neighbor = self.neighbors.get(neighbor_id)
         if not neighbor:
             return
-
         payload = json.dumps(message).encode("utf-8")
         try:
             self._socket.sendto(payload, (neighbor["ip"], neighbor["port"]))
@@ -361,7 +425,7 @@ class OSPFGamingDaemon:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OSPF-Gaming QoS-aware routing daemon")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to the JSON configuration file")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to JSON config")
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -377,7 +441,6 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
     daemon = OSPFGamingDaemon(args.config)
     daemon.start()
 
