@@ -56,7 +56,19 @@ for file in os.listdir(CONFIG_DIR):
             }
         })
 
-        service["networks"][net] = {"ipv4_address": ip}
+        octets = ip.split(".")
+        base = ".".join(octets[:3])
+        last = int(octets[3])
+        if last == 3:
+            self_last = 2
+        elif last == 2:
+            self_last = 3
+        else:
+            self_last = last
+
+        self_ip = f"{base}.{self_last}"
+        service["networks"][net] = {"ipv4_address": self_ip}
+
 
     compose["services"][router_id] = service
 
