@@ -1,23 +1,18 @@
 {
-  "router_id": "r5",
+  "router_id": "r8",
   "listen_ip": "0.0.0.0",
   "listen_port": 55000,
   "hello_interval": 5,
   "metric_interval": 30,
   "neighbors": [
     {
-      "id": "r3",
-      "ip": "10.0.35.2",
+      "id": "r4",
+      "ip": "10.0.48.2",
       "port": 55000
     },
     {
-      "id": "r8",
-      "ip": "10.0.58.2",
-      "port": 55000
-    },
-    {
-      "id": "r7",
-      "ip": "10.0.57.3",
+      "id": "r5",
+      "ip": "10.0.58.3",
       "port": 55000
     }
   ],

@@ -19,28 +19,28 @@ OSPF-Gaming is a proof-of-concept, QoS-aware link-state routing protocol tuned f
   - `ping_count` and `ping_interval` per router in JSON
   - Enhanced precision with more samples (default: 20 pings)
 
-- **Seven-router topology:**
-  - Updated from original 8 routers to current 7 routers (r1–r7)
-  - Includes new routers r6 and r7 with proper connectivity
+- **Eight-router topology:**
+  - Updated topology now includes 8 routers (r1–r8)
+  - New router r8 acts as intermediary between r4 and r5
   - Clean hostname resolution (no more .luisdorr-red suffixes)
 
 ## Repository structure
 
 | File/Dir | Description |
 | --- | --- |
-| `docker-compose.yml` | Docker Compose topology with seven FRRouting routers (r1–r7) with clean hostnames |
+| `docker-compose.yml` | Docker Compose topology with eight FRRouting routers (r1–r8) with clean hostnames |
 | `ospf_gaming_daemon.py` | Multithreaded Python daemon for OSPF-Gaming, maintains link-state and syncs kernel routes |
 | `metrics.py` | QoS measurement helpers (latency, jitter-first, packet loss, static bandwidth catalog) |
 | `algorithm.py` | Dijkstra-based shortest path used to build routing tables |
 | `route_manager.py` | Thin wrapper around `ip route` to add/remove routes |
-| `config/` | JSON configs for each router (`r1.json` … `r7.json`) |
+| `config/` | JSON configs for each router (`r1.json` … `r8.json`) |
 | `topologia.mermaid` | Mermaid diagram describing the lab topology |
 | `generate_compose.py` | Helper script to generate/update docker-compose from configs |
 | `generate_graph.py`, `analysis.py` | Utilities for visualization/analysis |
 
 ## Topology
 
-Current network topology (7 routers):
+Current network topology (8 routers):
 
 ```mermaid
 graph LR
@@ -49,7 +49,8 @@ graph LR
     r2 --- r3
     r2 --- r4
     r3 --- r5
-    r4 --- r5
+    r4 --- r8
+    r8 --- r5
     r4 --- r6
     r5 --- r7
 ```
@@ -60,7 +61,8 @@ Addressing follows per-link /24 subnets:
 - r2–r3: 10.0.23.0/24 (r2: .2, r3: .3)
 - r2–r4: 10.0.24.0/24 (r2: .2, r4: .3)
 - r3–r5: 10.0.35.0/24 (r3: .2, r5: .3)
-- r4–r5: 10.0.45.0/24 (r4: .2, r5: .3)
+- r4–r8: 10.0.48.0/24 (r4: .2, r8: .3)
+- r5–r8: 10.0.58.0/24 (r5: .3, r8: .2)
 - r4–r6: 10.0.46.0/24 (r4: .2, r6: .3)
 - r5–r7: 10.0.57.0/24 (r5: .2, r7: .3)
 
