@@ -23,6 +23,7 @@ DEFAULT_PORT = 55000
 HELLO_INTERVAL = 5
 METRIC_INTERVAL = 30
 DEAD_INTERVAL = 20  # ~4x hello, como no OSPF real
+LSA_TTL_HOPS = 8  # TTL simples para evitar loops de LSA
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -195,10 +196,22 @@ class OSPFGamingDaemon:
         """Marca vizinhos como down se não recebem Hello por DEAD_INTERVAL."""
         while self._running.is_set():
             now = time.time()
+            removed_any = False
             with self._state_lock:
                 for nid, state in self.neighbors.items():
                     if now - state["last_hello"] > DEAD_INTERVAL:
                         state["metrics"]["cost"] = float("inf")
+                        # Remove arestas do grafo ao expirar Hello
+                        if self.topology_graph.get(self.router_id, {}).get(nid) is not None:
+                            del self.topology_graph[self.router_id][nid]
+                            removed_any = True
+                        if self.topology_graph.get(nid, {}).get(self.router_id) is not None:
+                            del self.topology_graph[nid][self.router_id]
+                            removed_any = True
+            # Recalcula rotas e dispara LSA imediatamente após remoção de links mortos
+            if removed_any:
+                self._recalculate_routes()
+                self._broadcast_lsa()  # Acelera convergência enviando LSA imediatamente
             time.sleep(5)
 
     # ------------------------------------------------------------------
@@ -222,39 +235,52 @@ class OSPFGamingDaemon:
         links = message.get("neighbors", {})
         prefixes = message.get("prefixes", [])
         seqnum = int(message.get("seqnum", 0))
+        hops = int(message.get("hops", 0))
         if not origin:
             return
 
         need_reflood = False
+        topology_changed = False
         with self._state_lock:
             current_seq = self.lsa_versions.get(origin, -1)
             if seqnum <= current_seq:
-                # LSA velho
                 return
 
-            # Atualiza LSDB de versões
             self.lsa_versions[origin] = seqnum
 
-            # Atualiza grafo de custos
+            # Garante estrutura
             if origin not in self.topology_graph:
                 self.topology_graph[origin] = {}
+
             before_links = dict(self.topology_graph[origin])
-            self.topology_graph[origin].update({k: float(v) for k, v in links.items()})
+
+            # Aplica custos anunciados
+            new_links = {k: float(v) for k, v in links.items()}
+            self.topology_graph[origin].update(new_links)
+
+            # Remove links que desapareceram do LSA (stale)
+            for old_neighbor in list(self.topology_graph[origin].keys()):
+                if old_neighbor not in new_links:
+                    del self.topology_graph[origin][old_neighbor]
+
             if self.topology_graph[origin] != before_links:
                 need_reflood = True
+                topology_changed = True
 
-            # Armazena prefixes anunciados por 'origin'
+            # Prefixes
             old_prefixes = self.lsdb_prefixes.get(origin, set())
-            new_prefixes = set()
-            for p in prefixes:
-                if isinstance(p, str):
-                    new_prefixes.add(p)
+            new_prefixes = {p for p in prefixes if isinstance(p, str)}
             if new_prefixes and new_prefixes != old_prefixes:
                 self.lsdb_prefixes[origin] = new_prefixes
                 need_reflood = True
+                topology_changed = True
 
-        # Flood controlado: reenvia se houve novidade
-        if need_reflood:
+        if topology_changed:
+            # Recalcula rotas imediatamente para acelerar convergência
+            self._recalculate_routes()
+
+        if need_reflood and hops > 0:
+            message["hops"] = hops - 1
             for neighbor_id in list(self.neighbors.keys()):
                 if neighbor_id != origin:
                     self._send_message(neighbor_id, message)
@@ -263,7 +289,11 @@ class OSPFGamingDaemon:
     # Metrics and topology management
     # ------------------------------------------------------------------
     def _update_link_metrics(self) -> None:
-        for neighbor_id, neighbor in self.neighbors.items():
+        # Cria cópia protegida por lock para evitar condição de corrida com dead interval loop
+        with self._state_lock:
+            neighbors_copy = dict(self.neighbors)
+        
+        for neighbor_id, neighbor in neighbors_copy.items():
             ip_address = neighbor.get("ip")
             if not ip_address:
                 continue
@@ -279,17 +309,19 @@ class OSPFGamingDaemon:
             cost = self._calculate_cost(latency, jitter, loss, bandwidth)
 
             with self._state_lock:
-                neighbor["metrics"].update(
-                    {
-                        "latency": latency,
-                        "jitter": jitter,
-                        "loss": loss,
-                        "cost": cost,
-                    }
-                )
-                # bidirecional (simplificação)
-                self.topology_graph.setdefault(self.router_id, {})[neighbor_id] = cost
-                self.topology_graph.setdefault(neighbor_id, {})[self.router_id] = cost
+                # Verifica se vizinho ainda existe (pode ter sido removido pelo dead interval)
+                if neighbor_id in self.neighbors:
+                    self.neighbors[neighbor_id]["metrics"].update(
+                        {
+                            "latency": latency,
+                            "jitter": jitter,
+                            "loss": loss,
+                            "cost": cost,
+                        }
+                    )
+                    # bidirecional (simplificação)
+                    self.topology_graph.setdefault(self.router_id, {})[neighbor_id] = cost
+                    self.topology_graph.setdefault(neighbor_id, {})[self.router_id] = cost
 
             _LOGGER.debug(
                 "Metrics for %s -> latency: %.2f ms, jitter: %.3f ms, loss: %.2f%%, cost: %.2f",
@@ -347,6 +379,7 @@ class OSPFGamingDaemon:
                 "seqnum": self._seqnum,
                 "timestamp": time.time(),
                 "prefixes": prefixes,  # 🔹 anuncio das minhas subnets
+                "hops": LSA_TTL_HOPS,  # TTL inicial para controle de flood
             }
         for neighbor_id in list(self.neighbors.keys()):
             self._send_message(neighbor_id, message)

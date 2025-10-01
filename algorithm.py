@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 from typing import Dict, Hashable, Tuple
 
 Graph = Dict[Hashable, Dict[Hashable, float]]
@@ -44,6 +45,9 @@ def calculate_shortest_paths(graph: Graph, start_node: Hashable) -> RoutingTable
         visited.add(current_node)
 
         for neighbour, weight in graph.get(current_node, {}).items():
+            # Ignora arestas com custo infinito
+            if not math.isfinite(weight):
+                continue
             distance_via_current = current_distance + weight
             if distance_via_current < distances.get(neighbour, float("inf")):
                 distances[neighbour] = distance_via_current
