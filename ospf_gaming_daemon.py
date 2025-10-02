@@ -43,7 +43,7 @@ class OSPFGamingDaemon:
         self.ping_count: int = self.config.get("ping_count", 10)
         self.ping_interval: float = self.config.get("ping_interval", 0.2)
         
-       # Configurable cost weights (prioritizing jitter)
+        # Configurable cost weights (prioritizing jitter)
         weights_percent = self.config.get("weights_percent", {})
         self.weight_latency: float = weights_percent.get("latency", 25.0)
         self.weight_jitter: float = weights_percent.get("jitter", 35.0)
@@ -427,9 +427,13 @@ class OSPFGamingDaemon:
             try:
                 if current_next_hop:
                     delete_route(prefix)
-                add_route(prefix, next_hop_ip)  # se teu route_manager aceitar, pode passar a interface também
+                # >>> ajuste: passa a interface configurada para o vizinho, se houver
+                interface = self.neighbors.get(next_hop_id, {}).get("interface")
+                add_route(prefix, next_hop_ip, interface=interface)
                 self.installed_routes[prefix] = next_hop_ip
-                _LOGGER.debug("Installed/updated route %s via %s", prefix, next_hop_ip)
+                _LOGGER.debug("Installed/updated route %s via %s%s",
+                              prefix, next_hop_ip,
+                              f" dev {interface}" if interface else "")
             except Exception:
                 _LOGGER.exception("Falha ao instalar rota para %s via %s", prefix, next_hop_ip)
 

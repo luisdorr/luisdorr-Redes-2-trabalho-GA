@@ -1,9 +1,16 @@
 import os
+import stat
 import json
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "PyYAML não está instalado. Instale com 'pip install pyyaml' e tente novamente."
+    ) from exc
 
 CONFIG_DIR = "config"
 OUTPUT_FILE = "docker-compose.yml"
+SCRIPTS_DIR = "scripts"
 
 compose = {
     "services": {},
@@ -31,12 +38,23 @@ for file in os.listdir(CONFIG_DIR):
         "privileged": True,
         "cap_add": ["NET_ADMIN"],
         "volumes": [
-            "./:/opt/ospf-gaming"
+            "./:/opt/ospf-gaming",
+            "./scripts:/opt/ospf-gaming/scripts"
         ],
         # 👇 força todos os daemons a usarem DEBUG
         "command": f"python3 /opt/ospf-gaming/ospf_gaming_daemon.py "
                    f"--config /opt/ospf-gaming/config/{file} --log-level DEBUG",
-        "networks": {}
+        "networks": {},
+        "healthcheck": {
+            "test": [
+                "CMD-SHELL",
+                "pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null"
+            ],
+            "interval": "30s",
+            "timeout": "5s",
+            "retries": 3,
+            "start_period": "15s"
+        }
     }
 
     # Para cada vizinho, cria uma rede ponto-a-ponto
@@ -71,6 +89,24 @@ for file in os.listdir(CONFIG_DIR):
 
 
     compose["services"][router_id] = service
+
+
+os.makedirs(SCRIPTS_DIR, exist_ok=True)
+
+def ensure_executable_scripts(directory: str) -> None:
+    for entry in os.listdir(directory):
+        path = os.path.join(directory, entry)
+        if not os.path.isfile(path):
+            continue
+        if not entry.endswith(".sh"):
+            continue
+        current_mode = os.stat(path).st_mode
+        new_mode = current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        if new_mode != current_mode:
+            os.chmod(path, new_mode)
+
+
+ensure_executable_scripts(SCRIPTS_DIR)
 
 with open(OUTPUT_FILE, "w") as f:
     yaml.dump(compose, f, sort_keys=False)

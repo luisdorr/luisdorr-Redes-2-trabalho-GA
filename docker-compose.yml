@@ -2,12 +2,12 @@ services:
   r1:
     image: frrouting/frr:latest
     container_name: r1
-    hostname: r1
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r1.json
       --log-level DEBUG
     networks:
@@ -15,15 +15,23 @@ services:
         ipv4_address: 10.0.12.2
       net_r1_r3:
         ipv4_address: 10.0.13.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r2:
     image: frrouting/frr:latest
     container_name: r2
-    hostname: r2
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r2.json
       --log-level DEBUG
     networks:
@@ -33,15 +41,23 @@ services:
         ipv4_address: 10.0.23.2
       net_r2_r4:
         ipv4_address: 10.0.24.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r3:
     image: frrouting/frr:latest
     container_name: r3
-    hostname: r3
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r3.json
       --log-level DEBUG
     networks:
@@ -51,15 +67,23 @@ services:
         ipv4_address: 10.0.23.3
       net_r3_r5:
         ipv4_address: 10.0.35.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r4:
     image: frrouting/frr:latest
     container_name: r4
-    hostname: r4
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r4.json
       --log-level DEBUG
     networks:
@@ -69,15 +93,23 @@ services:
         ipv4_address: 10.0.48.2
       net_r4_r6:
         ipv4_address: 10.0.46.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r5:
     image: frrouting/frr:latest
     container_name: r5
-    hostname: r5
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r5.json
       --log-level DEBUG
     networks:
@@ -87,43 +119,67 @@ services:
         ipv4_address: 10.0.58.3
       net_r5_r7:
         ipv4_address: 10.0.57.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r6:
     image: frrouting/frr:latest
     container_name: r6
-    hostname: r6
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r6.json
       --log-level DEBUG
     networks:
       net_r4_r6:
         ipv4_address: 10.0.46.3
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r7:
     image: frrouting/frr:latest
     container_name: r7
-    hostname: r7
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r7.json
       --log-level DEBUG
     networks:
       net_r5_r7:
         ipv4_address: 10.0.57.3
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
   r8:
     image: frrouting/frr:latest
     container_name: r8
-    hostname: r8
     privileged: true
     cap_add:
     - NET_ADMIN
     volumes:
     - ./:/opt/ospf-gaming
+    - ./scripts:/opt/ospf-gaming/scripts
     command: python3 /opt/ospf-gaming/ospf_gaming_daemon.py --config /opt/ospf-gaming/config/r8.json
       --log-level DEBUG
     networks:
@@ -131,6 +187,14 @@ services:
         ipv4_address: 10.0.48.3
       net_r5_r8:
         ipv4_address: 10.0.58.2
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pgrep -f 'python3 /opt/ospf-gaming/ospf_gaming_daemon.py' >/dev/null
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 networks:
   net_r1_r2:
     driver: bridge
@@ -162,16 +226,16 @@ networks:
     ipam:
       config:
       - subnet: 10.0.48.0/24
-  net_r5_r8:
-    driver: bridge
-    ipam:
-      config:
-      - subnet: 10.0.58.0/24
   net_r4_r6:
     driver: bridge
     ipam:
       config:
       - subnet: 10.0.46.0/24
+  net_r5_r8:
+    driver: bridge
+    ipam:
+      config:
+      - subnet: 10.0.58.0/24
   net_r5_r7:
     driver: bridge
     ipam:

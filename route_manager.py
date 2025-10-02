@@ -1,43 +1,51 @@
-"""Utility helpers to manipulate kernel routes from OSPF-Gaming."""
-
-from __future__ import annotations
+"""Route management utilities for OSPF-Gaming."""
 
 import logging
 import subprocess
-from typing import List, Optional
+from typing import Optional
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _run_ip_command(arguments: List[str]) -> None:
-    """Execute an ``ip route`` command and log potential errors."""
-
-    cmd = ["ip", "route", *arguments]
+def _run_ip_command(arguments: list[str]) -> None:
+    """Executa o comando `ip route` com os argumentos fornecidos."""
+    cmd = ["ip", "route"] + arguments
+    _LOGGER.debug("Executando comando: %s", " ".join(cmd))
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        _LOGGER.error(
-            "Command '%s' failed with exit code %s: %s", " ".join(cmd), exc.returncode, exc.stderr
-        )
-        raise
-    except OSError as exc:  # pragma: no cover - defensive guard
-        _LOGGER.error("Unable to execute '%s': %s", " ".join(cmd), exc)
+    except subprocess.CalledProcessError as e:
+        _LOGGER.error("Erro ao executar comando '%s': %s", " ".join(cmd), e.stderr.strip())
         raise
 
 
 def add_route(destination_prefix: str, next_hop_ip: str, interface: Optional[str] = None) -> None:
-    """Install a unicast route towards ``destination_prefix`` via ``next_hop_ip``."""
-
-    arguments = ["add", destination_prefix, "via", next_hop_ip]
+    """
+    Adiciona ou substitui uma rota no kernel.
+    
+    Args:
+        destination_prefix (str): Exemplo "10.0.1.0/24".
+        next_hop_ip (str): IP do próximo salto.
+        interface (Optional[str]): Interface de saída (ex.: "eth0").
+    """
+    arguments = ["replace", destination_prefix, "via", next_hop_ip]
     if interface:
         arguments.extend(["dev", interface])
     _run_ip_command(arguments)
+    _LOGGER.info("Rota instalada: %s via %s%s",
+                 destination_prefix, next_hop_ip,
+                 f" dev {interface}" if interface else "")
 
 
 def delete_route(destination_prefix: str) -> None:
-    """Remove an existing unicast route for ``destination_prefix`` if present."""
-
-    _run_ip_command(["del", destination_prefix])
-
-
-__all__ = ["add_route", "delete_route"]
+    """
+    Remove rota do kernel.
+    
+    Args:
+        destination_prefix (str): Exemplo "10.0.1.0/24".
+    """
+    arguments = ["del", destination_prefix]
+    try:
+        _run_ip_command(arguments)
+        _LOGGER.info("Rota removida: %s", destination_prefix)
+    except Exception:
+        _LOGGER.warning("Não foi possível remover rota %s (pode não existir).", destination_prefix)
