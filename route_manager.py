@@ -1,4 +1,4 @@
-"""Route management utilities for OSPF-Gaming."""
+﻿from __future__ import annotations
 
 import logging
 import subprocess
@@ -7,45 +7,31 @@ from typing import Optional
 _LOGGER = logging.getLogger(__name__)
 
 
-def _run_ip_command(arguments: list[str]) -> None:
-    """Executa o comando `ip route` com os argumentos fornecidos."""
-    cmd = ["ip", "route"] + arguments
-    _LOGGER.debug("Executando comando: %s", " ".join(cmd))
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        _LOGGER.error("Erro ao executar comando '%s': %s", " ".join(cmd), e.stderr.strip())
-        raise
+def _run_ip(arguments: list[str]) -> None:
+    cmd = ["ip", "route", *arguments]
+    _LOGGER.debug("executing: %s", " ".join(cmd))
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
-def add_route(destination_prefix: str, next_hop_ip: str, interface: Optional[str] = None) -> None:
-    """
-    Adiciona ou substitui uma rota no kernel.
-    
-    Args:
-        destination_prefix (str): Exemplo "10.0.1.0/24".
-        next_hop_ip (str): IP do próximo salto.
-        interface (Optional[str]): Interface de saída (ex.: "eth0").
-    """
-    arguments = ["replace", destination_prefix, "via", next_hop_ip]
+def add_route(prefix: str, next_hop: str, *, interface: Optional[str] = None) -> None:
+    """Program a Layer-3 forwarding entry in the kernel."""
+
+    arguments = ["replace", prefix, "via", next_hop]
     if interface:
         arguments.extend(["dev", interface])
-    _run_ip_command(arguments)
-    _LOGGER.info("Rota instalada: %s via %s%s",
-                 destination_prefix, next_hop_ip,
-                 f" dev {interface}" if interface else "")
+    _run_ip(arguments)
+    _LOGGER.info("route %s via %s%s", prefix, next_hop, f" dev {interface}" if interface else "")
 
 
-def delete_route(destination_prefix: str) -> None:
-    """
-    Remove rota do kernel.
-    
-    Args:
-        destination_prefix (str): Exemplo "10.0.1.0/24".
-    """
-    arguments = ["del", destination_prefix]
+def delete_route(prefix: str) -> None:
+    """Withdraw a Layer-3 forwarding entry from the kernel."""
+
     try:
-        _run_ip_command(arguments)
-        _LOGGER.info("Rota removida: %s", destination_prefix)
-    except Exception:
-        _LOGGER.warning("Não foi possível remover rota %s (pode não existir).", destination_prefix)
+        _run_ip(["del", prefix])
+    except subprocess.CalledProcessError as exc:
+        _LOGGER.warning("failed to delete %s: %s", prefix, (exc.stderr or exc.stdout).strip())
+    else:
+        _LOGGER.info("removed route %s", prefix)
+
+
+__all__ = ["add_route", "delete_route"]

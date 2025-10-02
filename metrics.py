@@ -1,96 +1,89 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
+import math
 import re
 import statistics
 import subprocess
-from typing import Dict, Tuple, cast
-
-# Valores default de banda (em Mbps) apenas como catálogo estático opcional.
-STATIC_BANDWIDTH: Dict[Tuple[str, str], int] = {}
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 
-
-def extract_rtt_samples(output: str) -> list[float]:
-    """Extrai todas as amostras de RTT individuais do output do ping."""
-    samples: list[float] = []
-    for line in output.splitlines():
-        time_match = re.search(r"time=(\d+(?:\.\d+)?)\s*ms", line)
-        if time_match:
-            samples.append(float(time_match.group(1)))
-    return samples
+PING_LOSS = re.compile(r"(\d+(?:\.\d+)?)% packet loss")
+PING_RTT = re.compile(
+    r"(?:=|:)\s*(?P<min>\d+(?:\.\d+)?)/(?P<avg>\d+(?:\.\d+)?)/(?P<max>\d+(?:\.\d+)?)(?:/(?P<mdev>\d+(?:\.\d+)?))?"
+)
+PING_SAMPLE = re.compile(r"time=(\d+(?:\.\d+)?)\s*ms")
 
 
-def compute_jitter_from_samples(samples: list[float]) -> float:
-    """Calcula jitter como desvio padrão populacional das amostras de RTT."""
-    if len(samples) < 2:
-        return 0.0
-    return statistics.pstdev(samples)
+@dataclass(slots=True)
+class QoSMetrics:
+    """Latency, jitter, loss, and bandwidth observed between Layer-3 neighbours."""
+
+    latency_ms: float
+    jitter_ms: float
+    loss_percent: float
+    bandwidth_mbps: Optional[float]
 
 
-def choose_jitter(
-    samples: list[float],
-    min_rtt: float | None,
-    max_rtt: float | None,
-    mdev_str: str | None,
-) -> float:
-    """
-    Implementa política jitter-first com fallbacks:
-    1. Se samples >= 2: usa desvio padrão das amostras
-    2. Senão, se mdev disponível: usa mdev
-    3. Senão, se min/max disponíveis: usa max-min
-    4. Caso contrário: 0.0
-    """
-    if len(samples) >= 2:
-        jitter = compute_jitter_from_samples(samples)
-        _LOGGER.debug("Jitter calculado de %d amostras: %.3f ms", len(samples), jitter)
-        return jitter
-    
-    if mdev_str:
-        try:
-            jitter = float(mdev_str)
-            _LOGGER.debug("Jitter via mdev fallback: %.3f ms", jitter)
-            return jitter
-        except ValueError:
-            pass
-    
-    if min_rtt is not None and max_rtt is not None:
-        jitter = max(0.0, max_rtt - min_rtt)
-        _LOGGER.debug("Jitter via max-min fallback: %.3f ms", jitter)
-        return jitter
-    
-    _LOGGER.debug("Jitter fallback to 0.0 ms (insufficient data)")
-    return 0.0
+@dataclass(frozen=True, slots=True)
+class MetricWeights:
+    """Relative influence of each QoS dimension on the routing decision."""
+
+    latency: float
+    jitter: float
+    loss: float
+    bandwidth: float
 
 
-def _ordered_link(end_a: str, end_b: str) -> Tuple[str, str]:
-    """Retorna uma tupla ordenada representando um link."""
-    return cast(Tuple[str, str], tuple(sorted((end_a, end_b))))
+@dataclass(frozen=True, slots=True)
+class NormalizationBounds:
+    """Reference bounds used to map raw QoS values into a unitless routing cost."""
+
+    latency_ms: float
+    jitter_ms: float
+    loss_percent: float
+    bandwidth_mbps: float
 
 
-def get_static_bandwidth(end_a: str, end_b: str) -> int | None:
-    """Busca largura de banda estática se disponível."""
-    return STATIC_BANDWIDTH.get(_ordered_link(end_a, end_b))
+STATIC_BANDWIDTH: dict[Tuple[str, str], float] = {
+    ("r1", "r2"): 1000.0,
+    ("r1", "r3"): 900.0,
+    ("r2", "r3"): 800.0,
+    ("r2", "r4"): 700.0,
+    ("r3", "r5"): 700.0,
+    ("r4", "r8"): 650.0,
+    ("r5", "r8"): 650.0,
+    ("r4", "r6"): 500.0,
+    ("r5", "r7"): 500.0,
+}
+
+
+def get_reference_bandwidth(router_a: str, router_b: str) -> Optional[float]:
+    """Return the nominal capacity configured for a Layer-3 adjacency."""
+
+    key = tuple(sorted((router_a, router_b)))
+    return STATIC_BANDWIDTH.get(key)
 
 
 def measure_link_quality(
-    neighbor_ip: str, count: int = 10, interval: float = 0.2
-) -> Tuple[float, float, float]:
-    """Mede latência, jitter e perda de pacotes para um vizinho.
-
-    Usa "jitter-first" approach: calcula jitter a partir das amostras individuais,
-    com fallback para mdev (se disponível) ou max-min.
-    
-    Retorna (avg_latency_ms, jitter_ms, packet_loss_percent).
-    Em erro, retorna (inf, inf, 100).
-    """
+    neighbor_ip: str,
+    *,
+    count: int = 10,
+    interval: float = 0.2,
+    bandwidth_hint: Optional[float] = None,
+) -> QoSMetrics:
+    """Probe a neighbour with ICMP echo to characterise the link."""
 
     cmd = [
-        "env", "LANG=C",  # força saída em inglês
+        "env",
+        "LANG=C",
         "ping",
-        "-c", str(count),
-        "-i", str(interval),
+        "-c",
+        str(count),
+        "-i",
+        str(interval),
         neighbor_ip,
     ]
 
@@ -102,47 +95,71 @@ def measure_link_quality(
             text=True,
         )
     except OSError as exc:
-        _LOGGER.error("Falha ao executar ping para %s: %s", neighbor_ip, exc)
-        return float("inf"), float("inf"), 100.0
+        _LOGGER.error("ping %s failed: %s", neighbor_ip, exc)
+        return QoSMetrics(latency_ms=math.inf, jitter_ms=math.inf, loss_percent=100.0, bandwidth_mbps=bandwidth_hint)
 
-    output = completed.stdout + completed.stderr
+    output = (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else "")
 
-    # 1. perda de pacotes
-    loss_match = re.search(r"(\d+(?:\.\d+)?)% packet loss", output)
-
-    # 2. RTT — suporta iputils ou busybox
-    rtt_match = re.search(
-        r"(?:=|:)\s*(?P<min>\d+\.\d+)/(?P<avg>\d+\.\d+)/(?P<max>\d+\.\d+)(?:/(?P<mdev>\d+\.\d+))?",
-        output,
-    )
-
+    loss_match = PING_LOSS.search(output)
+    rtt_match = PING_RTT.search(output)
     if not loss_match or not rtt_match:
-        _LOGGER.warning("Não consegui parsear ping para %s. Saída:\n%s", neighbor_ip, output)
-        return float("inf"), float("inf"), 100.0
+        _LOGGER.warning("could not parse ping output for %s", neighbor_ip)
+        return QoSMetrics(latency_ms=math.inf, jitter_ms=math.inf, loss_percent=100.0, bandwidth_mbps=bandwidth_hint)
 
-    try:
-        packet_loss = float(loss_match.group(1))
-        min_rtt = float(rtt_match.group("min"))
-        avg_latency = float(rtt_match.group("avg"))
-        max_rtt = float(rtt_match.group("max"))
-        mdev_str = rtt_match.group("mdev")
+    packet_loss = float(loss_match.group(1))
+    latency = float(rtt_match.group("avg"))
+    min_rtt = float(rtt_match.group("min"))
+    max_rtt = float(rtt_match.group("max"))
+    mdev_text = rtt_match.group("mdev")
 
-        # JITTER-FIRST: usar funções utilitárias para cálculo limpo
-        rtt_samples = extract_rtt_samples(output)
-        jitter = choose_jitter(rtt_samples, min_rtt, max_rtt, mdev_str)
+    samples = [float(match.group(1)) for match in PING_SAMPLE.finditer(output)]
 
-    except Exception as exc:
-        _LOGGER.error("Estatísticas de ping malformadas para %s: %s\nSaída:\n%s", neighbor_ip, exc, output)
-        return float("inf"), float("inf"), 100.0
+    if len(samples) >= 2:
+        jitter = statistics.pstdev(samples)
+    elif mdev_text:
+        jitter = float(mdev_text)
+    else:
+        jitter = max(0.0, max_rtt - min_rtt)
 
-    return avg_latency, jitter, packet_loss
+    if not math.isfinite(latency):
+        latency = math.inf
+    if not math.isfinite(jitter):
+        jitter = math.inf
+
+    return QoSMetrics(latency_ms=latency, jitter_ms=jitter, loss_percent=packet_loss, bandwidth_mbps=bandwidth_hint)
+
+
+def compute_qos_cost(metrics: QoSMetrics, weights: MetricWeights, bounds: NormalizationBounds) -> float:
+    """Translate QoS observations into a scalar used by the link-state algorithm."""
+
+    weight_sum = weights.latency + weights.jitter + weights.loss + weights.bandwidth
+    if weight_sum <= 0:
+        return 100.0
+
+    latency_term = min(metrics.latency_ms / bounds.latency_ms, 1.0) if math.isfinite(metrics.latency_ms) else 1.0
+    jitter_term = min(metrics.jitter_ms / bounds.jitter_ms, 1.0) if math.isfinite(metrics.jitter_ms) else 1.0
+    loss_term = min(metrics.loss_percent / bounds.loss_percent, 1.0)
+
+    if metrics.bandwidth_mbps is None or metrics.bandwidth_mbps <= 0:
+        bandwidth_term = 1.0
+    else:
+        bandwidth_term = 1.0 - min(metrics.bandwidth_mbps / bounds.bandwidth_mbps, 1.0)
+
+    score = (
+        weights.latency * latency_term
+        + weights.jitter * jitter_term
+        + weights.loss * loss_term
+        + weights.bandwidth * bandwidth_term
+    ) / weight_sum
+
+    return round(score * 100.0, 3)
 
 
 __all__ = [
-    "STATIC_BANDWIDTH",
-    "get_static_bandwidth",
+    "QoSMetrics",
+    "MetricWeights",
+    "NormalizationBounds",
+    "compute_qos_cost",
+    "get_reference_bandwidth",
     "measure_link_quality",
-    "extract_rtt_samples",
-    "compute_jitter_from_samples",
-    "choose_jitter",
 ]

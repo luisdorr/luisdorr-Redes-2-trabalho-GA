@@ -1,239 +1,198 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import contextlib
 import dataclasses
 import logging
 import math
 import re
-import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
+
+import pandas as pd
 
 try:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-except ImportError:  # pragma: no cover - matplotlib might be missing in CI
+except ImportError:  # pragma: no cover
     plt = None  # type: ignore
-
-import pandas as pd
 
 _LOGGER = logging.getLogger(__name__)
 
-PING_LOSS_RE = re.compile(r"(\d+(?:\.\d+)?)% packet loss")
-PING_RTT_RE = re.compile(
-    r"(?:rtt|round-trip) min/avg/max(?:/mdev)? = "
-    r"(?P<min>\d+(?:\.\d+)?)/(?P<avg>\d+(?:\.\d+)?)/(?P<max>\d+(?:\.\d+)?)(?:/(?P<mdev>\d+(?:\.\d+)?))?"
-)
-TRACEROUTE_IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-PACKETS_CAPTURED_RE = re.compile(r"(\d+) packets captured")
-
 PROTOCOLS: Sequence[str] = ("ospf_gaming", "ospf_frr")
-ROUTERS: Sequence[str] = tuple(f"r{i}" for i in range(1, 9))
-DESTINATION_IP = "10.0.35.3"
+COMPOSE_FILES: Dict[str, Path] = {
+    "ospf_gaming": Path("docker-compose.yml"),
+    "ospf_frr": Path("docker-compose.frr.yml"),
+}
 PING_SOURCE = "r1"
+DESTINATION_IP = "10.0.35.3"
 DEGRADED_ROUTER = "r3"
 DEGRADED_INTERFACE = "eth0"
+PING_COUNT = 15
+PING_INTERVAL = 0.2
+PING_TIMEOUT = 60
+BOOTSTRAP_DELAY = 15
+CONVERGENCE_TIMEOUT = 120
 
 RESULTS_DIR = Path("results")
 RAW_DIR = RESULTS_DIR / "raw"
 TABLES_DIR = RESULTS_DIR / "tables"
 FIGURES_DIR = RESULTS_DIR / "figures"
 
-COMPOSE_FILES: Dict[str, Path] = {
-    "ospf_gaming": Path("docker-compose.yml"),
-    "ospf_frr": Path("docker-compose.frr.yml"),
-}
+PING_LOSS = re.compile(r"(\d+(?:\.\d+)?)% packet loss")
+PING_RTT = re.compile(
+    r"(?:=|:)\s*(?P<min>\d+(?:\.\d+)?)/(?P<avg>\d+(?:\.\d+)?)/(?P<max>\d+(?:\.\d+)?)(?:/(?P<mdev>\d+(?:\.\d+)?))?"
+)
+PING_SAMPLE = re.compile(r"time=(\d+(?:\.\d+)?)\s*ms")
+ROUTE_VIA = re.compile(r"via\s+(\d+(?:\.\d+){3})")
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class PingMetrics:
-    """Metrics extracted from a ping invocation."""
-
     latency_ms: Optional[float]
     jitter_ms: Optional[float]
     loss_percent: Optional[float]
     raw_output: str
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class ExperimentResult:
-    """Aggregation of all metrics gathered for a protocol."""
-
     protocol: str
-    baseline_ping: PingMetrics
-    post_ping: PingMetrics
-    convergence_time: Optional[float]
-    routing_overhead: int
+    baseline: PingMetrics
+    post: PingMetrics
+    baseline_next_hop: Optional[str]
+    post_next_hop: Optional[str]
+    convergence_time_s: Optional[float]
 
 
-def ensure_results_dirs() -> None:
-    """Create the directory structure used to store artefacts."""
-
+def ensure_directories() -> None:
     for directory in (RESULTS_DIR, RAW_DIR, TABLES_DIR, FIGURES_DIR):
         directory.mkdir(parents=True, exist_ok=True)
     for protocol in PROTOCOLS:
         (RAW_DIR / protocol).mkdir(parents=True, exist_ok=True)
 
 
-def run_command(cmd: Sequence[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    """Execute *cmd* returning a ``CompletedProcess`` instance.
-
-    The helper never raises, returning the completed process even for non-zero
-    exit codes so callers can decide how to proceed.
-    """
-
-    quoted = " ".join(shlex.quote(str(part)) for part in cmd)
-    _LOGGER.debug("Executing command: %s", quoted)
+def run_command(cmd: Sequence[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    quoted = " ".join(cmd)
+    _LOGGER.debug("executing: %s", quoted)
     try:
-        completed = subprocess.run(
-            list(cmd),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
-        _LOGGER.error("Command timed out after %s seconds: %s", timeout, quoted)
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        _LOGGER.error("timeout after %ss: %s", timeout, quoted)
         return subprocess.CompletedProcess(cmd, 124, exc.stdout or "", exc.stderr or "")
-    except FileNotFoundError as exc:  # pragma: no cover - defensive
-        _LOGGER.error("Command not found: %s", exc)
-        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
-    except Exception as exc:  # pragma: no cover - defensive
-        _LOGGER.exception("Failed to execute command %s", quoted)
-        return subprocess.CompletedProcess(cmd, 1, "", str(exc))
-
+    except Exception:
+        _LOGGER.exception("failed to run %s", quoted)
+        return subprocess.CompletedProcess(cmd, 1, "", "execution failure")
     if completed.returncode != 0:
-        stderr = completed.stderr.strip()
-        if stderr:
-            _LOGGER.warning("Command %s returned %s: %s", quoted, completed.returncode, stderr)
-        else:
-            _LOGGER.warning("Command %s returned %s", quoted, completed.returncode)
+        _LOGGER.warning("command %s exited with %s", quoted, completed.returncode)
     return completed
 
 
-def parse_ping_output(output: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
-    """Extract latency, jitter and loss percentage from ping *output*."""
-
-    loss_match = PING_LOSS_RE.search(output)
-    rtt_match = PING_RTT_RE.search(output)
-
+def parse_ping(output: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    loss_match = PING_LOSS.search(output)
+    rtt_match = PING_RTT.search(output)
     latency = float(rtt_match.group("avg")) if rtt_match else None
     jitter: Optional[float] = None
     if rtt_match:
         mdev = rtt_match.group("mdev")
         if mdev is not None:
             jitter = float(mdev)
-        else:
-            try:
-                min_rtt = float(rtt_match.group("min"))
-                max_rtt = float(rtt_match.group("max"))
-                jitter = max_rtt - min_rtt
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                jitter = None
+    samples = [float(match.group(1)) for match in PING_SAMPLE.finditer(output)]
+    if len(samples) >= 2:
+        mean = sum(samples) / len(samples)
+        jitter = math.sqrt(sum((sample - mean) ** 2 for sample in samples) / len(samples))
     loss = float(loss_match.group(1)) if loss_match else None
     return latency, jitter, loss
 
 
-def parse_traceroute_output(output: str) -> List[str]:
-    """Return the ordered list of hops from traceroute *output*."""
+def extract_next_hop(route_output: str) -> Optional[str]:
+    match = ROUTE_VIA.search(route_output)
+    return match.group(1) if match else None
 
-    hops: List[str] = []
-    for line in output.splitlines():
-        if line.startswith("traceroute"):
-            continue
-        match = TRACEROUTE_IP_RE.search(line)
-        if match:
-            hops.append(match.group(0))
-    return hops
+
+def save_raw(protocol: str, label: str, content: str) -> None:
+    path = RAW_DIR / protocol / f"{label}.txt"
+    path.write_text(content, encoding="utf-8")
 
 
 class ExperimentRunner:
-    """High level orchestrator for the comparative analysis."""
+    def __init__(self, protocols: Iterable[str]) -> None:
+        self.protocols = list(protocols)
 
-    def __init__(
-        self,
-        *,
-        ping_count: int = 10,
-        ping_timeout: int = 60,
-        traceroute_timeout: int = 60,
-        tcpdump_timeout: int = 120,
-        tcpdump_count: int = 200,
-        convergence_timeout: float = 120.0,
-        poll_interval: float = 2.0,
-        startup_delay: float = 10.0,
-        protocols: Sequence[str] | None = None,
-        routers: Sequence[str] | None = None,
-        command_runner: Callable[[Sequence[str], int], subprocess.CompletedProcess[str]] = run_command,
-        sleep_fn: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self.ping_count = ping_count
-        self.ping_timeout = ping_timeout
-        self.traceroute_timeout = traceroute_timeout
-        self.tcpdump_timeout = tcpdump_timeout
-        self.tcpdump_count = tcpdump_count
-        self.convergence_timeout = convergence_timeout
-        self.poll_interval = poll_interval
-        self.startup_delay = startup_delay
-        self.protocols = list(protocols) if protocols is not None else list(PROTOCOLS)
-        self.routers = list(routers) if routers is not None else list(ROUTERS)
-        self.command_runner = command_runner
-        self.sleep = sleep_fn
+    def run(self) -> List[ExperimentResult]:
+        ensure_directories()
+        results: List[ExperimentResult] = []
+        for protocol in self.protocols:
+            try:
+                results.append(self._run_protocol(protocol))
+            except Exception:
+                _LOGGER.exception("protocol %s failed", protocol)
+        if results:
+            self._export_tables(results)
+            self._generate_figures(results)
+        return results
 
-    # ------------------------------------------------------------------
-    # Topology management
-    # ------------------------------------------------------------------
-    def start_topology(self, protocol: str) -> None:
-        compose = COMPOSE_FILES.get(protocol)
-        if compose is None:
-            raise ValueError(f"Unknown protocol {protocol}")
-        cmd = ["docker-compose", "-f", str(compose), "up", "-d", "--remove-orphans"]
-        self.command_runner(cmd, timeout=self.tcpdump_timeout)
-        if self.startup_delay > 0:
-            self.sleep(self.startup_delay)
+    def _run_protocol(self, protocol: str) -> ExperimentResult:
+        compose_file = COMPOSE_FILES[protocol]
+        self._start_topology(compose_file)
+        time.sleep(BOOTSTRAP_DELAY)
 
-    def stop_topology(self, protocol: str) -> None:
-        compose = COMPOSE_FILES.get(protocol)
-        if compose is None:
-            return
-        cmd = ["docker-compose", "-f", str(compose), "down"]
-        self.command_runner(cmd, timeout=self.tcpdump_timeout)
+        baseline = self._collect_ping(protocol, "baseline")
+        baseline_route_output = self._route_snapshot()
+        baseline_next_hop = extract_next_hop(baseline_route_output)
+        save_raw(protocol, "route_baseline", baseline_route_output)
 
-    # ------------------------------------------------------------------
-    # Measurement primitives
-    # ------------------------------------------------------------------
-    def run_ping(self, protocol: str, phase: str) -> PingMetrics:
-        cmd = ["docker", "exec", PING_SOURCE, "ping", "-c", str(self.ping_count), DESTINATION_IP]
-        completed = self.command_runner(cmd, timeout=self.ping_timeout)
-        raw_text = (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else "")
-        save_path = RAW_DIR / protocol / f"{phase}_ping.txt"
-        save_path.write_text(raw_text, encoding="utf-8")
-        latency, jitter, loss = parse_ping_output(completed.stdout)
-        return PingMetrics(latency, jitter, loss, raw_text)
+        self._apply_degradation()
+        convergence_time = self._measure_convergence(baseline_next_hop)
+        post = self._collect_ping(protocol, "post_degradation")
+        post_route_output = self._route_snapshot()
+        post_next_hop = extract_next_hop(post_route_output)
+        save_raw(protocol, "route_post", post_route_output)
 
-    def collect_path(self, protocol: str, phase: str, *, save: bool = True) -> List[str]:
-        cmd = ["docker", "exec", PING_SOURCE, "traceroute", "-n", DESTINATION_IP]
-        completed = self.command_runner(cmd, timeout=self.traceroute_timeout)
-        raw_text = (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else "")
-        if save:
-            save_path = RAW_DIR / protocol / f"{phase}_traceroute.txt"
-            save_path.write_text(raw_text, encoding="utf-8")
-        hops = parse_traceroute_output(raw_text)
-        if not hops:
-            fallback_cmd = ["docker", "exec", PING_SOURCE, "ip", "route", "get", DESTINATION_IP]
-            fallback = self.command_runner(fallback_cmd, timeout=self.traceroute_timeout)
-            raw = (fallback.stdout or "") + ("\n" + fallback.stderr if fallback.stderr else "")
-            if save:
-                save_path = RAW_DIR / protocol / f"{phase}_route.txt"
-                save_path.write_text(raw, encoding="utf-8")
-            hops = parse_traceroute_output(raw)
-        return hops
+        self._clear_degradation()
+        self._stop_topology(compose_file)
 
-    def apply_degradation(self, protocol: str) -> None:
-        log_path = RAW_DIR / protocol / "degradation.log"
+        return ExperimentResult(
+            protocol=protocol,
+            baseline=baseline,
+            post=post,
+            baseline_next_hop=baseline_next_hop,
+            post_next_hop=post_next_hop,
+            convergence_time_s=convergence_time,
+        )
+
+    def _start_topology(self, compose_file: Path) -> None:
+        run_command(["docker", "compose", "-f", str(compose_file), "up", "-d"], timeout=120)
+
+    def _stop_topology(self, compose_file: Path) -> None:
+        run_command(["docker", "compose", "-f", str(compose_file), "down", "-v"], timeout=120)
+
+    def _collect_ping(self, protocol: str, label: str) -> PingMetrics:
+        cmd = [
+            "docker",
+            "exec",
+            PING_SOURCE,
+            "ping",
+            "-c",
+            str(PING_COUNT),
+            "-i",
+            str(PING_INTERVAL),
+            DESTINATION_IP,
+        ]
+        completed = run_command(cmd, timeout=PING_TIMEOUT)
+        output = (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else "")
+        save_raw(protocol, f"ping_{label}", output)
+        latency, jitter, loss = parse_ping(output)
+        return PingMetrics(latency_ms=latency, jitter_ms=jitter, loss_percent=loss, raw_output=output)
+
+    def _route_snapshot(self) -> str:
+        cmd = ["docker", "exec", PING_SOURCE, "ip", "route", "get", DESTINATION_IP]
+        completed = run_command(cmd, timeout=30)
+        return (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else "")
+
+    def _apply_degradation(self) -> None:
         cmd = [
             "docker",
             "exec",
@@ -246,18 +205,16 @@ class ExperimentRunner:
             "root",
             "netem",
             "delay",
-            "120ms",
+            "200ms",
             "40ms",
+            "distribution",
+            "normal",
             "loss",
-            "5%",
+            "20%",
         ]
-        completed = self.command_runner(cmd, timeout=self.tcpdump_timeout)
-        log_path.write_text(
-            (completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else ""),
-            encoding="utf-8",
-        )
+        run_command(cmd, timeout=30)
 
-    def clear_degradation(self) -> None:
+    def _clear_degradation(self) -> None:
         cmd = [
             "docker",
             "exec",
@@ -269,191 +226,95 @@ class ExperimentRunner:
             DEGRADED_INTERFACE,
             "root",
         ]
-        self.command_runner(cmd, timeout=self.tcpdump_timeout)
+        run_command(cmd, timeout=30)
 
-    def measure_convergence(self, baseline_path: List[str]) -> Optional[float]:
+    def _measure_convergence(self, baseline_next_hop: Optional[str]) -> Optional[float]:
+        if not baseline_next_hop:
+            return None
         start = time.time()
-        deadline = start + self.convergence_timeout
+        deadline = start + CONVERGENCE_TIMEOUT
         while time.time() < deadline:
-            cmd = ["docker", "exec", PING_SOURCE, "traceroute", "-n", DESTINATION_IP]
-            completed = self.command_runner(cmd, timeout=self.traceroute_timeout)
-            hops = parse_traceroute_output((completed.stdout or "") + ("\n" + completed.stderr if completed.stderr else ""))
-            if hops and baseline_path and hops != baseline_path:
-                now = time.time()
-                return max(0.0, now - start)
-            self.sleep(self.poll_interval)
+            route_output = self._route_snapshot()
+            current = extract_next_hop(route_output)
+            if current and current != baseline_next_hop:
+                return round(time.time() - start, 3)
+            time.sleep(1.0)
         return None
 
-    def capture_routing_packets(self, protocol: str, phase: str) -> int:
-        total_packets = 0
-        for router in self.routers:
-            pcap_path = RAW_DIR / protocol / f"{phase}_{router}.pcap"
-            cmd = [
-                "docker",
-                "exec",
-                router,
-                "tcpdump",
-                "-i",
-                "any",
-                "-nn",
-                "-c",
-                str(self.tcpdump_count),
-                "-w",
-                str(pcap_path),
-                "ospf",
-            ]
-            completed = self.command_runner(cmd, timeout=self.tcpdump_timeout)
-            text = (completed.stdout or "") + "\n" + (completed.stderr or "")
-            match = PACKETS_CAPTURED_RE.search(text)
-            if match:
-                total_packets += int(match.group(1))
-        return total_packets
-
-    # ------------------------------------------------------------------
-    # Experiment execution
-    # ------------------------------------------------------------------
-    def run_protocol(self, protocol: str) -> ExperimentResult:
-        ensure_results_dirs()
-        self.start_topology(protocol)
-        baseline_path: List[str] = []
-        baseline_ping: Optional[PingMetrics] = None
-        post_ping: Optional[PingMetrics] = None
-        convergence_time: Optional[float] = None
-        routing_overhead = 0
-        try:
-            baseline_path = self.collect_path(protocol, "baseline", save=True)
-            baseline_ping = self.run_ping(protocol, "baseline")
-            self.apply_degradation(protocol)
-            convergence_time = self.measure_convergence(baseline_path)
-            post_ping = self.run_ping(protocol, "post_degradation")
-            routing_overhead = self.capture_routing_packets(protocol, "routing")
-        finally:
-            with contextlib.suppress(Exception):  # pragma: no cover - cleanup
-                self.clear_degradation()
-            self.stop_topology(protocol)
-
-        if baseline_ping is None or post_ping is None:  # pragma: no cover - defensive
-            raise RuntimeError("Ping metrics missing")
-
-        return ExperimentResult(
-            protocol=protocol,
-            baseline_ping=baseline_ping,
-            post_ping=post_ping,
-            convergence_time=convergence_time,
-            routing_overhead=routing_overhead,
-        )
-
-    def run(self, protocols: Optional[Iterable[str]] = None) -> List[ExperimentResult]:
-        ensure_results_dirs()
-        selected = list(protocols) if protocols is not None else self.protocols
-        results: List[ExperimentResult] = []
-        for protocol in selected:
-            try:
-                results.append(self.run_protocol(protocol))
-            except Exception:
-                _LOGGER.exception("Failed to execute protocol %s", protocol)
-        if results:
-            self.export_tables(results)
-            self.generate_figures(results)
-        return results
-
-    # ------------------------------------------------------------------
-    # Reporting helpers
-    # ------------------------------------------------------------------
-    def export_tables(self, results: Sequence[ExperimentResult]) -> None:
+    def _export_tables(self, results: Sequence[ExperimentResult]) -> None:
         latency_rows = []
         for result in results:
             latency_rows.append(
                 {
                     "protocol": result.protocol,
                     "phase": "baseline",
-                    "latency_ms": result.baseline_ping.latency_ms,
-                    "jitter_ms": result.baseline_ping.jitter_ms,
-                    "loss_percent": result.baseline_ping.loss_percent,
+                    "latency_ms": result.baseline.latency_ms,
+                    "jitter_ms": result.baseline.jitter_ms,
+                    "loss_percent": result.baseline.loss_percent,
+                    "next_hop": result.baseline_next_hop,
                 }
             )
             latency_rows.append(
                 {
                     "protocol": result.protocol,
                     "phase": "post_degradation",
-                    "latency_ms": result.post_ping.latency_ms,
-                    "jitter_ms": result.post_ping.jitter_ms,
-                    "loss_percent": result.post_ping.loss_percent,
+                    "latency_ms": result.post.latency_ms,
+                    "jitter_ms": result.post.jitter_ms,
+                    "loss_percent": result.post.loss_percent,
+                    "next_hop": result.post_next_hop,
                 }
             )
-        latency_df = pd.DataFrame(latency_rows)
-        latency_df.to_csv(TABLES_DIR / "latency_jitter.csv", index=False)
+        pd.DataFrame(latency_rows).to_csv(TABLES_DIR / "latency_jitter_loss.csv", index=False)
 
-        convergence_df = pd.DataFrame(
+        convergence_rows = [
             {
-                "protocol": [r.protocol for r in results],
-                "convergence_time_s": [r.convergence_time for r in results],
+                "protocol": result.protocol,
+                "convergence_time_s": result.convergence_time_s,
             }
-        )
-        convergence_df.to_csv(TABLES_DIR / "convergence_time.csv", index=False)
+            for result in results
+        ]
+        pd.DataFrame(convergence_rows).to_csv(TABLES_DIR / "convergence.csv", index=False)
 
-        overhead_df = pd.DataFrame(
-            {
-                "protocol": [r.protocol for r in results],
-                "routing_packets": [r.routing_overhead for r in results],
-            }
-        )
-        overhead_df.to_csv(TABLES_DIR / "routing_overhead.csv", index=False)
-
-    def generate_figures(self, results: Sequence[ExperimentResult]) -> None:
-        if plt is None:  # pragma: no cover - matplotlib optional
-            _LOGGER.warning("matplotlib is not available; skipping figures")
+    def _generate_figures(self, results: Sequence[ExperimentResult]) -> None:
+        if plt is None or not results:
             return
 
-        protocols = [r.protocol for r in results]
+        protocols = [result.protocol for result in results]
+        baseline_latency = [result.baseline.latency_ms or math.nan for result in results]
+        post_latency = [result.post.latency_ms or math.nan for result in results]
+        baseline_jitter = [result.baseline.jitter_ms or math.nan for result in results]
+        post_jitter = [result.post.jitter_ms or math.nan for result in results]
 
-        # Convergence time bar chart
         fig, ax = plt.subplots(figsize=(6, 4))
-        ax.bar(protocols, [r.convergence_time or 0.0 for r in results], color="steelblue")
-        ax.set_ylabel("Seconds")
-        ax.set_title("Convergence Time")
-        fig.tight_layout()
-        fig.savefig(FIGURES_DIR / "convergence_time.png")
-        plt.close(fig)
-
-        # Latency and jitter comparison
-        baseline_latency = [r.baseline_ping.latency_ms or math.nan for r in results]
-        post_latency = [r.post_ping.latency_ms or math.nan for r in results]
-        baseline_jitter = [r.baseline_ping.jitter_ms or math.nan for r in results]
-        post_jitter = [r.post_ping.jitter_ms or math.nan for r in results]
-
-        width = 0.2
-        x_positions = list(range(len(protocols)))
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.bar([x - width for x in x_positions], baseline_latency, width=width, label="Latency (baseline)")
-        ax.bar(x_positions, post_latency, width=width, label="Latency (post)")
-        ax.bar([x + width for x in x_positions], baseline_jitter, width=width, label="Jitter (baseline)")
-        ax.bar([x + 2 * width for x in x_positions], post_jitter, width=width, label="Jitter (post)")
-        ax.set_xticks(x_positions)
+        width = 0.3
+        positions = range(len(protocols))
+        ax.bar([p - width for p in positions], baseline_latency, width=width, label="latency baseline")
+        ax.bar(positions, post_latency, width=width, label="latency post")
+        ax.bar([p + width for p in positions], post_jitter, width=width, label="jitter post")
+        ax.set_xticks(list(positions))
         ax.set_xticklabels(protocols)
-        ax.set_ylabel("Milliseconds")
-        ax.set_title("Latency and Jitter")
+        ax.set_ylabel("milliseconds")
+        ax.set_title("QoS metrics r1->r5")
         ax.legend()
         fig.tight_layout()
         fig.savefig(FIGURES_DIR / "latency_jitter.png")
         plt.close(fig)
 
-        # Routing overhead comparison
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.bar(protocols, [r.routing_overhead for r in results], color="darkorange")
-        ax.set_ylabel("Packets")
-        ax.set_title("Routing Overhead")
+        fig, ax = plt.subplots(figsize=(4, 4))
+        ax.bar(protocols, [result.convergence_time_s or 0.0 for result in results], color="steelblue")
+        ax.set_ylabel("seconds")
+        ax.set_title("Convergence after r3 degradation")
         fig.tight_layout()
-        fig.savefig(FIGURES_DIR / "routing_overhead.png")
+        fig.savefig(FIGURES_DIR / "convergence.png")
         plt.close(fig)
 
 
-def main() -> None:  # pragma: no cover - manual execution
+def main() -> None:  # pragma: no cover
     logging.basicConfig(level=logging.INFO)
-    runner = ExperimentRunner()
+    runner = ExperimentRunner(PROTOCOLS)
     runner.run()
 
 
 if __name__ == "__main__":  # pragma: no cover
     main()
+
