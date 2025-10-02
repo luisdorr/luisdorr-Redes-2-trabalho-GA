@@ -1,4 +1,4 @@
-﻿# OSPF-Gaming
+# OSPF-Gaming
 
 OSPF-Gaming is a QoS-aware link-state routing daemon for educational labs. Each router floods latency, jitter, loss, and static bandwidth observations, and the control plane maps the link-state database into Layer-3 next-hop decisions with Dijkstra.
 
@@ -25,8 +25,26 @@ OSPF-Gaming is a QoS-aware link-state routing daemon for educational labs. Each 
 ## Manual Lab Control
 - Launch OSPF-Gaming only: `docker compose -f docker-compose.yml up -d`
 - Launch FRR baseline: `docker compose -f docker-compose.frr.yml up -d`
-- Remove impairment manually: `docker exec r3 tc qdisc del dev eth0 root`
 - Tear down a topology: `docker compose -f <file> down -v`
+
+### How to Degrade a Route Manually
+To simulate impairments on the link of `r3` (for testing failover and QoS awareness):
+
+- Apply degradation (adds 20% loss, 100ms delay, ±20ms jitter)  
+```
+docker exec r3 tc qdisc add dev eth0 root netem loss 20% delay 100ms 20ms
+```
+
+- Remove degradation and restore normal operation  
+```
+docker exec r3 tc qdisc del dev eth0 root
+```
+
+💡 To check which interface to impair, run:  
+```
+docker exec r3 ip route get 10.0.35.3
+```
+This shows which interface (`eth0`, `eth1`, etc.) is currently used as next hop toward the destination.
 
 ## Code Map
 - `algorithm.py` — shortest-path computation returning next hops and costs.
@@ -39,4 +57,3 @@ OSPF-Gaming is a QoS-aware link-state routing daemon for educational labs. Each 
 ## Reporting
 - After running `analysis.py`, reference the CSV files and plots in your presentation or course report.
 - For live inspection inside the lab, `docker exec r1 ip route get 10.0.35.3` shows the current next hop selected by the QoS-aware control plane.
-
