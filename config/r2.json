@@ -1,0 +1,25 @@
+{
+  "router_id": "r2",
+  "listen_ip": "0.0.0.0",
+  "listen_port": 55000,
+  "hello_interval": 5,
+  "metric_interval": 30,
+  "neighbors": [
+    {
+      "id": "r1",
+      "ip": "10.0.12.2",
+      "port": 55000
+    },
+    {
+      "id": "r3",
+      "ip": "10.0.23.3",
+      "port": 55000
+    },
+    {
+      "id": "r4",
+      "ip": "10.0.24.3",
+      "port": 55000
+    }
+  ],
+  "route_mappings": {}
+}

@@ -1,26 +1,42 @@
-# OSPF Gaming - Algoritmo de Roteamento para Jogos Eletrônicos
+﻿# OSPF-Gaming
 
-## Visão Geral
+OSPF-Gaming is a QoS-aware link-state routing daemon for educational labs. Each router floods latency, jitter, loss, and static bandwidth observations, and the control plane maps the link-state database into Layer-3 next-hop decisions with Dijkstra.
 
-Este projeto implementa uma versão melhorada do protocolo OSPF (Open Shortest Path First), otimizada para redes com tráfego de jogos eletrônicos. A principal inovação é a substituição da métrica de custo padrão do OSPF (baseada apenas na largura de banda) por uma fórmula de custo composta que considera:
+## Quick Start
+- Install Docker, Docker Compose, and Python 3.11 with `pip install pandas matplotlib PyYAML` on the host.
+- Generate the lab assets:
+  - `python generate_frr_configs.py`
+  - `python generate_compose.py`
+- Run the automated comparison (`analysis.py` spins the topologies, measures pings r1->r5, degrades r3, and stores CSV/plots):
+  - `python analysis.py`
 
-- **Largura de Banda (α)**
-- **Latência (β)**
-- **Perda de Pacotes (γ)**
-- **Jitter (δ)**
+## What the Experiment Does
+- Spins up the eight OSPF-Gaming routers and the FRR/OSPF baseline using the compose files in the project root.
+- Records baseline ICMP latency, jitter, and loss between r1 and r5.
+- Injects delay and loss on `r3:eth0` with `tc netem` to penalise the direct path.
+- Tracks the time until r1 installs a new next-hop for 10.0.35.3, capturing convergence for both protocols.
+- Repeats the ping measurements after convergence and stores raw outputs under `results/raw/<protocol>/`.
 
-Essas métricas são cruciais para a qualidade da experiência em jogos online, onde a estabilidade e a rapidez da conexão são mais importantes do que a largura de banda bruta.
+## Outputs
+- Tables under `results/tables/` (`latency_jitter_loss.csv`, `convergence.csv`).
+- Figures under `results/figures/` (`latency_jitter.png`, `convergence.png`) when `matplotlib` is available.
+- Generated FRR configs live in `configs/`, while Docker manifests are `docker-compose.yml` (OSPF-Gaming) and `docker-compose.frr.yml` (FRR baseline).
 
-## Fórmula de Custo Composta
+## Manual Lab Control
+- Launch OSPF-Gaming only: `docker compose -f docker-compose.yml up -d`
+- Launch FRR baseline: `docker compose -f docker-compose.frr.yml up -d`
+- Remove impairment manually: `docker exec r3 tc qdisc del dev eth0 root`
+- Tear down a topology: `docker compose -f <file> down -v`
 
-O coração do projeto é a fórmula de custo ponderada:
+## Code Map
+- `algorithm.py` — shortest-path computation returning next hops and costs.
+- `metrics.py` — active ICMP probing plus QoS cost normalisation.
+- `ospf_gaming_daemon.py` — Hello/LSA flooding, QoS weighting, and kernel FIB sync.
+- `route_manager.py` — thin wrapper around `ip route` for FIB updates.
+- `analysis.py` — automation for the r1->r5 convergence experiment.
+- `generate_compose.py` / `generate_frr_configs.py` — regenerate topology manifests from `config/*.json`.
 
-`Custo(L) = α⋅(BW_norm) + β⋅(Lat_norm) + γ⋅(Loss_norm) + δ⋅(Jitter_norm)`
+## Reporting
+- After running `analysis.py`, reference the CSV files and plots in your presentation or course report.
+- For live inspection inside the lab, `docker exec r1 ip route get 10.0.35.3` shows the current next hop selected by the QoS-aware control plane.
 
-Onde:
-- **α, β, γ, δ**: Pesos configuráveis que somam 1.0. Para jogos, os pesos de latência, perda de pacotes e jitter são priorizados.
-- **_norm**: Valores normalizados das métricas, permitindo a combinação de unidades diferentes em um custo adimensional.
-
-## Topologia da Rede
-
-A topologia da rede é definida em `topologia.mermaid` e implementada em `docker-compose.yml`. Ela consiste em 8 roteadores e 2 hosts, simulando uma rede complexa onde o roteamento otimizado é essencial.

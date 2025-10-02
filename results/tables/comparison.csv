@@ -1,0 +1,3 @@
+baseline_latency_ms,loss_change_percent,protocol,baseline_jitter_ms,loss_improvement_percent,jitter_change_ms,post_loss_percent,convergence_time_s,quality_gain,post_quality_index,post_latency_ms,baseline_quality_index,latency_improvement_ms,jitter_improvement_ms,post_jitter_ms,baseline_loss_percent,latency_change_ms
+0.151,0.0,ospf_gaming,0.09133372262690757,0.0,-0.06259072347928904,0.0,23.679,0.09759072347928902,0.14474299914761854,0.116,0.24233372262690756,0.03499999999999999,0.06259072347928904,0.028742999147618537,0.0,-0.03499999999999999
+0.102,40.0,ospf_frr,0.062304841973423966,-40.0,75.58095376490222,40.0,60.0,-411.8089537649022,411.9732586068756,296.33,0.16430484197342396,-296.228,-75.58095376490222,75.64325860687565,0.0,296.228

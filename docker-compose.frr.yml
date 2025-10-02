@@ -7,12 +7,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r1.json
+    - ./configs/r1.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r1_r2:
         ipv4_address: 10.0.12.2
@@ -25,12 +21,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r2.json
+    - ./configs/r2.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r1_r2:
         ipv4_address: 10.0.12.3
@@ -45,12 +37,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r3.json
+    - ./configs/r3.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r1_r3:
         ipv4_address: 10.0.13.3
@@ -65,12 +53,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r4.json
+    - ./configs/r4.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r2_r4:
         ipv4_address: 10.0.24.3
@@ -85,12 +69,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r5.json
+    - ./configs/r5.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r3_r5:
         ipv4_address: 10.0.35.3
@@ -105,12 +85,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r6.json
+    - ./configs/r6.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r4_r6:
         ipv4_address: 10.0.46.3
@@ -121,12 +97,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r7.json
+    - ./configs/r7.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r5_r7:
         ipv4_address: 10.0.57.3
@@ -137,12 +109,8 @@ services:
     cap_add:
     - NET_ADMIN
     volumes:
-    - ./:/opt/ospf-gaming
-    command:
-    - python3
-    - /opt/ospf-gaming/ospf_gaming_daemon.py
-    - --config
-    - /opt/ospf-gaming/config/r8.json
+    - ./configs/r8.conf:/etc/frr/frr.conf
+    - ./configs/daemons:/etc/frr/daemons
     networks:
       net_r4_r8:
         ipv4_address: 10.0.48.3
