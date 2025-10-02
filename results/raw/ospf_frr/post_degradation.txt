@@ -1,0 +1,14 @@
+PING 10.0.35.3 (10.0.35.3): 56 data bytes
+64 bytes from 10.0.35.3: seq=0 ttl=63 time=216.420 ms
+64 bytes from 10.0.35.3: seq=1 ttl=63 time=408.189 ms
+64 bytes from 10.0.35.3: seq=3 ttl=63 time=285.142 ms
+64 bytes from 10.0.35.3: seq=6 ttl=63 time=220.925 ms
+64 bytes from 10.0.35.3: seq=7 ttl=63 time=407.707 ms
+64 bytes from 10.0.35.3: seq=9 ttl=63 time=323.589 ms
+64 bytes from 10.0.35.3: seq=10 ttl=63 time=222.317 ms
+64 bytes from 10.0.35.3: seq=13 ttl=63 time=355.032 ms
+64 bytes from 10.0.35.3: seq=14 ttl=63 time=227.655 ms
+
+--- 10.0.35.3 ping statistics ---
+15 packets transmitted, 9 packets received, 40% packet loss
+round-trip min/avg/max = 216.420/296.330/408.189 ms

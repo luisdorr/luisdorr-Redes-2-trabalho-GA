@@ -1,0 +1,5 @@
+latency_ms,protocol,loss_percent,phase,next_hop,jitter_ms
+0.151,ospf_gaming,0.0,baseline,10.0.13.3,0.09133372262690757
+0.116,ospf_gaming,0.0,post_degradation,10.0.12.3,0.028742999147618537
+0.102,ospf_frr,0.0,baseline,10.0.13.3,0.062304841973423966
+296.33,ospf_frr,40.0,post_degradation,10.0.13.3,75.64325860687565
